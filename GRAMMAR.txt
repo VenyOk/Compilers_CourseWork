@@ -1,0 +1,221 @@
+Лексическая структура:
+
+<letter>            ::= 'A' | 'B' | ... | 'Z' | 'a' | 'b' | ... | 'z'
+<digit>             ::= '0' | '1' | '2' | ... | '9'
+<whitespace>        ::= ' ' | '\t' | '\f' | '\r'
+<newline>           ::= '\n'
+
+Формат строки Fortran:
+- Строка максимум 80 символов
+- Метки в позициях 1-5
+- Операторы в позициях 7-72
+- Позиция 6 пустая или содержит символ продолжения строки
+
+Комментарии:
+<comment>           ::= '!' <any-chars-except-newline> <newline>
+                      | 'C' <any-chars> <newline>  (если 'C' в позиции 1)
+
+Литералы:
+<integer>           ::= <digit>+
+<real>              ::= <digit>* '.' <digit>+ [<exponent>]
+                      | <digit>+ '.' [<exponent>]
+                      | <digit>+ <exponent>
+<exponent>          ::= ('E' | 'D') ['+' | '-'] <digit>+
+<string>            ::= '\'' <chars> '\''
+                      | '"' <chars> '"'
+<logical-const>     ::= '.TRUE.' | '.FALSE.'
+
+Идентификаторы:
+<identifier>        ::= <letter> [(<letter> | <digit> | '_')]*
+Длина: 1-6 символов
+Первый символ: буква
+
+Ключевые слова (регистронезависимые):
+PROGRAM, END, IMPLICIT, NONE
+INTEGER, REAL, COMPLEX, LOGICAL, CHARACTER
+DIMENSION, PARAMETER, DATA
+IF, THEN, ELSE, ENDIF
+DO, ENDDO, WHILE, CONTINUE
+GOTO, STOP
+PRINT, READ, WRITE
+SIN, COS, TAN, ASIN, ACOS, ATAN
+EXP, LOG, LOG10
+SQRT, ABS
+MIN, MAX, MOD
+INT, FLOAT
+
+Операторы и разделители:
+Арифметические:     +, -, *, /, **
+Конкатенация:       //
+Сравнения:          .EQ., .NE., .LT., .LE., .GT., .GE.
+Логические:         .AND., .OR., .NOT., .EQV., .NEQV.
+Присваивание:       =
+Разделители:        (, ), ,, :, *
+
+Токены:
+INTEGER_LIT, REAL_LIT, STRING_LIT, IDENTIFIER, COMMENT, EOF
+PROGRAM, END, IMPLICIT, NONE
+INTEGER, REAL, COMPLEX, LOGICAL, CHARACTER
+DIMENSION, PARAMETER, DATA
+IF, THEN, ELSE, ENDIF
+DO, ENDDO, WHILE, CONTINUE
+GOTO, STOP
+PRINT, READ, WRITE
+SIN, COS, TAN, ASIN, ACOS, ATAN
+EXP, LOG, LOG10
+SQRT, ABS
+MIN, MAX, MOD
+INT_FUNC, FLOAT
+LPAREN, RPAREN, COMMA, COLON, ASSIGN_OP
+PLUS, MINUS, STAR, SLASH, CONCAT, POWER
+EQ, NE, LT, LE, GT, GE
+AND, OR, NOT, EQV, NEQV
+TRUE, FALSE
+
+Грамматика:
+
+<program>           ::= [<program-header>] <implicit-stmts> <declarations> <statements> 'END'
+
+<program-header>    ::= 'PROGRAM' <identifier>
+
+<implicit-stmts>    ::= <implicit-stmt>*
+
+<implicit-stmt>     ::= 'IMPLICIT' 'NONE'
+                      | 'IMPLICIT' <implicit-rule> (',' <implicit-rule>)*
+
+<implicit-rule>     ::= <type-spec> '(' <letter-spec> (',' <letter-spec>)* ')'
+
+<letter-spec>       ::= <letter>
+                      | <letter> '-' <letter>
+
+<type-spec>         ::= 'INTEGER' ['*' <integer>]
+                      | 'REAL' ['*' <integer>]
+                      | 'LOGICAL'
+                      | 'COMPLEX'
+                      | 'CHARACTER' ['*' <integer>]
+
+<declarations>      ::= <declaration>*
+
+<declaration>       ::= <type-decl>
+                      | <dimension-stmt>
+                      | <parameter-stmt>
+                      | <data-stmt>
+
+<type-decl>         ::= <type-spec> <var-list>
+
+<var-list>          ::= <variable> (',' <variable>)*
+
+<variable>          ::= <identifier> [<array-spec>]
+
+<array-spec>        ::= '(' <dim-list> ')'
+
+<dim-list>          ::= <dim-range> (',' <dim-range>)*
+
+<dim-range>         ::= <integer> ':' <integer>
+                      | <integer>
+
+<dimension-stmt>    ::= 'DIMENSION' <dim-var-list>
+
+<dim-var-list>      ::= <dim-variable> (',' <dim-variable>)*
+
+<dim-variable>      ::= <identifier> '(' <dim-list> ')'
+
+<parameter-stmt>    ::= 'PARAMETER' '(' <param-list> ')'
+
+<param-list>        ::= <param> (',' <param>)*
+
+<param>             ::= <identifier> '=' <expression>
+
+<data-stmt>         ::= 'DATA' <data-item-list>
+
+<data-item-list>    ::= <data-item-group> (',' <data-item-group>)*
+
+<data-item-group>   ::= <data-var-list> '/' <value-list> '/'
+
+<data-var-list>     ::= <data-var> (',' <data-var>)*
+
+<data-var>          ::= <identifier>
+                      | <identifier> '(' <expr-list> ')'
+
+<value-list>        ::= <expression> (',' <expression>)*
+
+<statements>        ::= <statement>*
+
+<statement>         ::= [<label>] (<assignment> | <if-stmt> | <do-stmt>
+                      | <print-stmt> | <read-stmt> | <write-stmt>
+                      | <continue-stmt> | <goto-stmt> | <stop-stmt>
+                      | <data-stmt>)
+
+<label>             ::= <integer>
+
+<assignment>        ::= <lvalue> '=' <expression>
+
+<lvalue>            ::= <identifier> [<index-list>]
+
+<index-list>        ::= '(' <expression> (',' <expression>)* ')'
+
+<expression>        ::= <eqv-expr>
+
+<eqv-expr>          ::= <or-expr> (('.EQV.' | '.NEQV.') <or-expr>)*
+
+<or-expr>           ::= <and-expr> ('.OR.' <and-expr>)*
+
+<and-expr>          ::= <not-expr> ('.AND.' <not-expr>)*
+
+<not-expr>          ::= ['.NOT.'] <relational-expr>
+
+<relational-expr>   ::= <additive-expr> [(<rel-op>) <additive-expr>]*
+
+<rel-op>            ::= '.EQ.' | '.NE.' | '.LT.' | '.LE.' | '.GT.' | '.GE.'
+
+<additive-expr>     ::= <concat-expr> (('+' | '-') <concat-expr>)*
+
+<concat-expr>       ::= <multiplicative-expr> ('//' <multiplicative-expr>)*
+
+<multiplicative-expr> ::= <power-expr> (('*' | '/') <power-expr>)*
+
+<power-expr>        ::= <unary-expr> ('**' <unary-expr>)*
+
+<unary-expr>        ::= [('+' | '-')] <primary-expr>
+
+<primary-expr>      ::= <integer>
+                      | <real>
+                      | <string>
+                      | <logical-const>
+                      | <identifier> [<index-list>]
+                      | <function-call>
+                      | '(' <expression> ')'
+
+<function-call>     ::= <identifier> '(' [<expr-list>] ')'
+
+<expr-list>         ::= <expression> (',' <expression>)*
+
+<if-stmt>           ::= 'IF' '(' <expression> ')' <integer> ',' <integer> ',' <integer>
+                      | 'IF' '(' <expression> ')' <statement>
+                      | 'IF' '(' <expression> ')' 'THEN' <statements> [<else-if-clauses>] [<else-clause>] 'ENDIF'
+
+<else-if-clauses>   ::= ('ELSE' 'IF' '(' <expression> ')' 'THEN' <statements>)*
+
+<else-clause>       ::= 'ELSE' [<else-if-clauses>] [<statements>]
+
+<do-stmt>           ::= 'DO' [<label>] <identifier> '=' <expression> ',' <expression> [',' <expression>]
+                            <statements>
+                        (<label> 'CONTINUE' | 'ENDDO')
+                      | 'DO' [<label>] 'WHILE' '(' <expression> ')'
+                            <statements>
+                        (<label> 'CONTINUE' | 'ENDDO')
+
+<print-stmt>        ::= 'PRINT' '*' ',' <expr-list>
+
+<read-stmt>         ::= 'READ' '*' [','] <var-list>
+                      | 'READ' '(' '*' [',' '*'] ')' [','] <var-list>
+
+<write-stmt>        ::= 'WRITE' '(' '*' [',' '*'] ')' <expr-list>
+
+<var-list>          ::= <identifier> (',' <identifier>)*
+
+<continue-stmt>      ::= [<label>] 'CONTINUE'
+
+<goto-stmt>         ::= 'GOTO' <integer>
+
+<stop-stmt>         ::= 'STOP'
