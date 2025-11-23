@@ -2,7 +2,9 @@ import argparse
 import sys
 from src.core import Lexer, Parser, pretty_print_ast
 from src.semantic import SemanticAnalyzer
-def analyze_file(file_path: str) -> int:
+from src.ssa_generator import SSAGenerator
+from src.llvm_generator import LLVMGenerator
+def analyze_file(file_path: str, ssa_output: str = None, llvm_output: str = None) -> int:
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             code = f.read()
@@ -25,12 +27,10 @@ def analyze_file(file_path: str) -> int:
             print()
         parser = Parser(tokens)
         ast = parser.parse()
-        print("=" * 80)
-        print("AST (Abstract Syntax Tree):")
+        print("AST:")
         print("=" * 80)
         print(pretty_print_ast(ast))
         print()
-        print("=" * 80)
         print("Семантический анализ:")
         print("=" * 80)
         semantic = SemanticAnalyzer()
@@ -52,7 +52,29 @@ def analyze_file(file_path: str) -> int:
         elif success:
             print("[OK] Семантический анализ завершен успешно, но есть предупреждения.")
         else:
-            print("[ERROR] Семантический анализ выявил ошибки.")
+            print("[ОШИБКА] Семантический анализ выявил ошибки.")
+        if success:
+            if ssa_output:
+                try:
+                    ssa_gen = SSAGenerator()
+                    ssa_instructions = ssa_gen.generate(ast)
+                    ssa_str = ssa_gen.to_string(ssa_instructions)
+                    with open(ssa_output, 'w', encoding='utf-8') as f:
+                        f.write(ssa_str)
+                    print(f"[OK] SSA форма записана в '{ssa_output}'")
+                except Exception as e:
+                    print(f"Ошибка при генерации SSA: {e}", file=sys.stderr)
+                    return 1
+            if llvm_output:
+                try:
+                    llvm_gen = LLVMGenerator()
+                    llvm_code = llvm_gen.generate(ast)
+                    with open(llvm_output, 'w', encoding='utf-8') as f:
+                        f.write(llvm_code)
+                    print(f"[OK] LLVM IR записан в '{llvm_output}'")
+                except Exception as e:
+                    print(f"Ошибка при генерации LLVM IR: {e}", file=sys.stderr)
+                    return 1
         return 0 if success else 1
     except SyntaxError as e:
         print(f"Синтаксическая ошибка: {e}", file=sys.stderr)
@@ -77,9 +99,19 @@ def main():
         required=True,
         help='Путь к .f файлу для анализа'
     )
+    parser.add_argument(
+        '-s', '--ssa',
+        dest='ssa_output',
+        help='Путь к выходному файлу для SSA формы (.s)'
+    )
+    parser.add_argument(
+        '-l', '--llvm',
+        dest='llvm_output',
+        help='Путь к выходному файлу для LLVM IR (.ll)'
+    )
     args = parser.parse_args()
     if not args.file.endswith('.f'):
         print(f"Предупреждение: файл '{args.file}' не имеет расширения .f", file=sys.stderr)
-    return analyze_file(args.file)
+    return analyze_file(args.file, args.ssa_output, args.llvm_output)
 if __name__ == '__main__':
     sys.exit(main())

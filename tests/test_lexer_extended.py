@@ -84,8 +84,8 @@ class TestLexerExtended(unittest.TestCase):
         STOP"""
         lexer = Lexer(code)
         tokens = lexer.tokenize()
-        keyword_tokens = [t for t in tokens if 
-                         t.type in [TokenType.PROGRAM, TokenType.END, TokenType.IF, 
+        keyword_tokens = [t for t in tokens if
+                         t.type in [TokenType.PROGRAM, TokenType.END, TokenType.IF,
                                    TokenType.DO, TokenType.PRINT, TokenType.READ,
                                    TokenType.INTEGER, TokenType.REAL, TokenType.LOGICAL,
                                    TokenType.ENDIF, TokenType.ENDDO, TokenType.THEN]]

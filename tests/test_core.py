@@ -62,7 +62,7 @@ class TestLexer(unittest.TestCase):
         tokens = lexer.tokenize()
         self.assertEqual(tokens[0].type, TokenType.INTEGER)
         self.assertEqual(tokens[1].type, TokenType.IDENTIFIER)
-        self.assertEqual(tokens[2].type, TokenType.REAL)                        
+        self.assertEqual(tokens[2].type, TokenType.REAL)
 class TestParser(unittest.TestCase):
     def test_simple_program(self):
         code = """
@@ -103,7 +103,7 @@ END
         tokens = lexer.tokenize()
         parser = Parser(tokens)
         ast = parser.parse()
-        self.assertEqual(len(ast.statements), 2)                    
+        self.assertEqual(len(ast.statements), 2)
         self.assertIsInstance(ast.statements[1], DoLoop)
     def test_if_statement(self):
         code = """
@@ -119,7 +119,7 @@ END
         tokens = lexer.tokenize()
         parser = Parser(tokens)
         ast = parser.parse()
-        self.assertEqual(len(ast.statements), 2)             
+        self.assertEqual(len(ast.statements), 2)
         self.assertIsInstance(ast.statements[1], IfStatement)
     def test_print_statement(self):
         code = """
@@ -174,6 +174,6 @@ END
         parser = Parser(tokens)
         ast = parser.parse()
         self.assertIsInstance(ast, Program)
-        self.assertEqual(len(ast.statements), 3)                  
+        self.assertEqual(len(ast.statements), 3)
 if __name__ == '__main__':
     unittest.main()
