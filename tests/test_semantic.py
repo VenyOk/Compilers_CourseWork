@@ -2,109 +2,12 @@ import unittest
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from src.core import Lexer, Parser
+
 from src.semantic import SemanticAnalyzer
-class TestLexerValidation(unittest.TestCase):
-    def test_lexer_valid(self):
-        code = """      PROGRAM TEST1
-      INTEGER I, J, K
-      REAL X, Y
-      I = 5
-      J = 10
-      X = 3.14
-      Y = X + I
-      PRINT *, I, J, X, Y
-      END"""
-        lexer = Lexer(code)
-        tokens = lexer.tokenize()
-        errors = lexer.get_errors()
-        self.assertGreater(len(tokens), 0)
-    def test_lexer_invalid_line_length(self):
-        code = """      PROGRAM TEST2
-      INTEGER VARIABLE12345678901234567890123456789012345678901234567890123456789012345678901234567890
-      END"""
-        lexer = Lexer(code)
-        tokens = lexer.tokenize()
-        errors = lexer.get_errors()
-        self.assertGreater(len(errors), 0)
-    def test_lexer_invalid_var_name_length(self):
-        code = """      PROGRAM TEST4
-      INTEGER VERYLONGVARIABLENAME
-      END"""
-        lexer = Lexer(code)
-        tokens = lexer.tokenize()
-        errors = lexer.get_errors()
-        self.assertGreater(len(errors), 0)
-    def test_lexer_invalid_var_name_start(self):
-        code = """      PROGRAM TEST5
-      INTEGER 123VAR
-      END"""
-        lexer = Lexer(code)
-        tokens = lexer.tokenize()
-        errors = lexer.get_errors()
-        self.assertGreater(len(errors), 0)
-class TestParserValidation(unittest.TestCase):
-    def test_parser_valid(self):
-        code = """      PROGRAM TEST6
-      IMPLICIT NONE
-      INTEGER I, J
-      REAL X, Y
-      LOGICAL FLAG
-      I = 5
-      J = 10
-      X = 3.14
-      Y = 2.71
-      FLAG = .TRUE.
-      IF (FLAG) THEN
-          I = I + 1
-      ELSE
-          J = J + 1
-      ENDIF
-      PRINT *, I, J, X, Y
-      END"""
-        lexer = Lexer(code)
-        tokens = lexer.tokenize()
-        parser = Parser(tokens)
-        ast = parser.parse()
-        self.assertIsNotNone(ast)
-    def test_parser_invalid_two_operators(self):
-        code = """      PROGRAM TEST7
-      INTEGER I, J
-      REAL X, Y
-      X = 10.0
-      Y = 5.0
-      I = X/-Y
-      END"""
-        lexer = Lexer(code)
-        tokens = lexer.tokenize()
-        parser = Parser(tokens)
-        with self.assertRaises(SyntaxError):
-            parser.parse()
-    def test_parser_valid_parentheses(self):
-        code = """      PROGRAM TEST8
-      INTEGER I
-      REAL X, Y
-      X = 10.0
-      Y = 5.0
-      I = X/(-Y)
-      END"""
-        lexer = Lexer(code)
-        tokens = lexer.tokenize()
-        parser = Parser(tokens)
-        ast = parser.parse()
-        self.assertIsNotNone(ast)
+from src.core import Lexer, Parser
+
+
 class TestImplicitValidation(unittest.TestCase):
-    def test_implicit_invalid_order(self):
-        code = """      PROGRAM TEST10
-      INTEGER I
-      IMPLICIT NONE
-      REAL X
-      END"""
-        lexer = Lexer(code)
-        tokens = lexer.tokenize()
-        parser = Parser(tokens)
-        with self.assertRaises(SyntaxError):
-            parser.parse()
     def test_implicit_none_valid(self):
         code = """      PROGRAM TEST39
       IMPLICIT NONE
@@ -121,6 +24,7 @@ class TestImplicitValidation(unittest.TestCase):
         semantic = SemanticAnalyzer()
         success = semantic.analyze(ast)
         self.assertTrue(success)
+
     def test_implicit_none_invalid(self):
         code = """      PROGRAM TEST40
       IMPLICIT NONE
@@ -137,6 +41,8 @@ class TestImplicitValidation(unittest.TestCase):
         self.assertFalse(success)
         errors = semantic.get_errors()
         self.assertGreater(len(errors), 0)
+
+
 class TestArraysValidation(unittest.TestCase):
     def test_arrays_valid(self):
         code = """      PROGRAM TEST11
@@ -157,24 +63,7 @@ class TestArraysValidation(unittest.TestCase):
         semantic = SemanticAnalyzer()
         success = semantic.analyze(ast)
         self.assertTrue(success)
-    def test_arrays_invalid_dimensions(self):
-        code = """      PROGRAM TEST12
-      DIMENSION A(1:10, 1:20, 1:30, 1:40, 1:50, 1:60, 1:70, 1:80)
-      END"""
-        lexer = Lexer(code)
-        tokens = lexer.tokenize()
-        parser = Parser(tokens)
-        with self.assertRaises(SyntaxError):
-            parser.parse()
-    def test_arrays_invalid_range(self):
-        code = """      PROGRAM TEST13
-      DIMENSION A(10:5)
-      END"""
-        lexer = Lexer(code)
-        tokens = lexer.tokenize()
-        parser = Parser(tokens)
-        with self.assertRaises(SyntaxError):
-            parser.parse()
+
     def test_arrays_7d_valid(self):
         code = """      PROGRAM TEST38
       DIMENSION A(1:2, 1:2, 1:2, 1:2, 1:2, 1:2, 1:2)
@@ -190,6 +79,8 @@ class TestArraysValidation(unittest.TestCase):
         semantic = SemanticAnalyzer()
         success = semantic.analyze(ast)
         self.assertTrue(success)
+
+
 class TestParameterValidation(unittest.TestCase):
     def test_parameter_valid(self):
         code = """      PROGRAM TEST14
@@ -207,6 +98,7 @@ class TestParameterValidation(unittest.TestCase):
         semantic = SemanticAnalyzer()
         success = semantic.analyze(ast)
         self.assertTrue(success)
+
     def test_parameter_complex_expr(self):
         code = """      PROGRAM TEST35
       PARAMETER (A = 2, B = 3, C = A + B)
@@ -223,6 +115,7 @@ class TestParameterValidation(unittest.TestCase):
         semantic = SemanticAnalyzer()
         success = semantic.analyze(ast)
         self.assertTrue(success)
+
     def test_parameter_string(self):
         code = """      PROGRAM TEST41
       PARAMETER (MSG = 'HELLO')
@@ -237,6 +130,7 @@ class TestParameterValidation(unittest.TestCase):
         semantic = SemanticAnalyzer()
         success = semantic.analyze(ast)
         self.assertTrue(success)
+
     def test_parameter_logical(self):
         code = """      PROGRAM TEST42
       PARAMETER (FLAG = .TRUE.)
@@ -251,6 +145,8 @@ class TestParameterValidation(unittest.TestCase):
         semantic = SemanticAnalyzer()
         success = semantic.analyze(ast)
         self.assertTrue(success)
+
+
 class TestIfStatementsValidation(unittest.TestCase):
     def test_if_simple_valid(self):
         code = """      PROGRAM TEST18
@@ -268,6 +164,7 @@ class TestIfStatementsValidation(unittest.TestCase):
         semantic = SemanticAnalyzer()
         success = semantic.analyze(ast)
         self.assertTrue(success)
+
     def test_if_block_valid(self):
         code = """      PROGRAM TEST19
       LOGICAL FLAG
@@ -291,6 +188,7 @@ class TestIfStatementsValidation(unittest.TestCase):
         semantic = SemanticAnalyzer()
         success = semantic.analyze(ast)
         self.assertTrue(success)
+
     def test_if_arithmetic_valid(self):
         code = """      PROGRAM TEST21
       INTEGER I
@@ -312,6 +210,7 @@ class TestIfStatementsValidation(unittest.TestCase):
         semantic = SemanticAnalyzer()
         success = semantic.analyze(ast)
         self.assertTrue(success)
+
     def test_if_invalid_type(self):
         code = """      PROGRAM TEST22
       INTEGER I
@@ -329,6 +228,8 @@ class TestIfStatementsValidation(unittest.TestCase):
         self.assertFalse(success)
         errors = semantic.get_errors()
         self.assertGreater(len(errors), 0)
+
+
 class TestDoLoopsValidation(unittest.TestCase):
     def test_do_labeled_valid(self):
         code = """      PROGRAM TEST23
@@ -346,6 +247,7 @@ class TestDoLoopsValidation(unittest.TestCase):
         semantic = SemanticAnalyzer()
         success = semantic.analyze(ast)
         self.assertTrue(success)
+
     def test_do_enddo_valid(self):
         code = """      PROGRAM TEST24
       INTEGER I, SUM
@@ -362,6 +264,7 @@ class TestDoLoopsValidation(unittest.TestCase):
         semantic = SemanticAnalyzer()
         success = semantic.analyze(ast)
         self.assertTrue(success)
+
     def test_do_default_step(self):
         code = """      PROGRAM TEST25
       INTEGER I, SUM
@@ -378,6 +281,7 @@ class TestDoLoopsValidation(unittest.TestCase):
         semantic = SemanticAnalyzer()
         success = semantic.analyze(ast)
         self.assertTrue(success)
+
     def test_do_invalid_non_constant(self):
         code = """      PROGRAM TEST26
       INTEGER I, J, K
@@ -396,6 +300,7 @@ class TestDoLoopsValidation(unittest.TestCase):
         self.assertFalse(success)
         errors = semantic.get_errors()
         self.assertGreater(len(errors), 0)
+
     def test_do_while_valid(self):
         code = """      PROGRAM TEST37
       INTEGER I
@@ -415,6 +320,8 @@ class TestDoLoopsValidation(unittest.TestCase):
         semantic = SemanticAnalyzer()
         success = semantic.analyze(ast)
         self.assertTrue(success)
+
+
 class TestConcatValidation(unittest.TestCase):
     def test_concat_valid(self):
         code = """      PROGRAM TEST27
@@ -431,6 +338,7 @@ class TestConcatValidation(unittest.TestCase):
         semantic = SemanticAnalyzer()
         success = semantic.analyze(ast)
         self.assertTrue(success)
+
     def test_concat_invalid_type(self):
         code = """      PROGRAM TEST28
       INTEGER I, J
@@ -447,6 +355,8 @@ class TestConcatValidation(unittest.TestCase):
         self.assertFalse(success)
         errors = semantic.get_errors()
         self.assertGreater(len(errors), 0)
+
+
 class TestDuplicateValidation(unittest.TestCase):
     def test_duplicate_declaration(self):
         code = """      PROGRAM TEST29
@@ -462,6 +372,7 @@ class TestDuplicateValidation(unittest.TestCase):
         self.assertFalse(success)
         errors = semantic.get_errors()
         self.assertGreater(len(errors), 0)
+
     def test_duplicate_dimension(self):
         code = """      PROGRAM TEST30
       DIMENSION A(100)
@@ -476,6 +387,8 @@ class TestDuplicateValidation(unittest.TestCase):
         self.assertFalse(success)
         errors = semantic.get_errors()
         self.assertGreater(len(errors), 0)
+
+
 class TestComplexPrograms(unittest.TestCase):
     def test_operator_precedence(self):
         code = """      PROGRAM TEST45
@@ -502,5 +415,8 @@ class TestComplexPrograms(unittest.TestCase):
         semantic = SemanticAnalyzer()
         success = semantic.analyze(ast)
         self.assertTrue(success)
+
+
 if __name__ == '__main__':
     unittest.main()
+

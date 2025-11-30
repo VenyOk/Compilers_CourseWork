@@ -4,6 +4,8 @@ from src.core import Lexer, Parser, pretty_print_ast
 from src.semantic import SemanticAnalyzer
 from src.ssa_generator import SSAGenerator
 from src.llvm_generator import LLVMGenerator
+
+
 def analyze_file(file_path: str, ssa_output: str = None, llvm_output: str = None) -> int:
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -48,7 +50,8 @@ def analyze_file(file_path: str, ssa_output: str = None, llvm_output: str = None
                 print(f"  {i}. {warning}")
             print()
         if success and not warnings:
-            print("[OK] Семантический анализ завершен успешно, ошибок и предупреждений нет.")
+            print(
+                "[OK] Семантический анализ завершен успешно, ошибок и предупреждений нет.")
         elif success:
             print("[OK] Семантический анализ завершен успешно, но есть предупреждения.")
         else:
@@ -73,7 +76,8 @@ def analyze_file(file_path: str, ssa_output: str = None, llvm_output: str = None
                         f.write(llvm_code)
                     print(f"[OK] LLVM IR записан в '{llvm_output}'")
                 except Exception as e:
-                    print(f"Ошибка при генерации LLVM IR: {e}", file=sys.stderr)
+                    print(
+                        f"Ошибка при генерации LLVM IR: {e}", file=sys.stderr)
                     return 1
         return 0 if success else 1
     except SyntaxError as e:
@@ -84,6 +88,8 @@ def analyze_file(file_path: str, ssa_output: str = None, llvm_output: str = None
         import traceback
         traceback.print_exc()
         return 1
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Анализатор Fortran кода - выводит AST и результаты семантической проверки",
@@ -111,7 +117,10 @@ def main():
     )
     args = parser.parse_args()
     if not args.file.endswith('.f'):
-        print(f"Предупреждение: файл '{args.file}' не имеет расширения .f", file=sys.stderr)
+        print(
+            f"Предупреждение: файл '{args.file}' не имеет расширения .f", file=sys.stderr)
     return analyze_file(args.file, args.ssa_output, args.llvm_output)
+
+
 if __name__ == '__main__':
     sys.exit(main())

@@ -1,4 +1,4 @@
-from typing import Dict, List, Set, Tuple, Optional
+from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass, field
 from src.core import (
     Program, Declaration, Statement, Assignment, DoLoop, IfStatement,
@@ -9,23 +9,31 @@ from src.core import (
     ExitStatement, SimpleIfStatement, DoWhile, LabeledDoLoop, LabeledDoWhile,
     ArrayRef
 )
+
+
 @dataclass
 class SSAVariable:
     name: str
     version: int
     type_: str = "unknown"
+
     def __str__(self):
         return f"{self.name}_{self.version}"
+
+
 @dataclass
 class SSAInstruction:
     opcode: str
     operands: List[str] = field(default_factory=list)
     result: Optional[str] = None
+
     def __str__(self):
         if self.result:
             return f"{self.result} = {self.opcode} {' '.join(self.operands)}"
         else:
             return f"{self.opcode} {' '.join(self.operands)}"
+
+
 class SSAGenerator:
     def __init__(self):
         self.instructions: List[SSAInstruction] = []
@@ -35,6 +43,7 @@ class SSAGenerator:
         self.current_block = "entry"
         self.block_counter = 0
         self.temp_counter = 0
+
     def generate(self, ast: Program) -> List[SSAInstruction]:
         self.blocks = {"entry": []}
         for decl in ast.declarations:
@@ -45,6 +54,7 @@ class SSAGenerator:
         for block_name in sorted(self.blocks.keys()):
             instructions.extend(self.blocks[block_name])
         return instructions
+
     def _process_declaration(self, decl: Declaration):
         if hasattr(decl, 'names'):
             for name, dims in decl.names:
@@ -69,6 +79,7 @@ class SSAGenerator:
                     )
                 self._emit(instr)
                 self.var_versions[name] = 0
+
     def _process_statement(self, stmt: Statement):
         if isinstance(stmt, Assignment):
             self._process_assignment(stmt)
@@ -100,6 +111,7 @@ class SSAGenerator:
             self._emit(SSAInstruction("continue"))
         elif isinstance(stmt, ExitStatement):
             self._emit(SSAInstruction("exit"))
+
     def _process_assignment(self, stmt: Assignment):
         rhs_val = self._process_expression(stmt.value)
         if stmt.target not in self.var_versions:
@@ -122,6 +134,7 @@ class SSAGenerator:
                 result=new_var
             )
         self._emit(instr)
+
     def _process_do_loop(self, stmt: DoLoop):
         init_val = self._process_expression(stmt.start)
         self._emit(SSAInstruction(
@@ -133,7 +146,7 @@ class SSAGenerator:
         body_block = self._new_block("loop_body")
         exit_block = self._new_block("loop_exit")
         self._emit_phi(f"{stmt.var}_loop",
-                      [(f"{stmt.var}_loop_init", self.current_block)])
+                       [(f"{stmt.var}_loop_init", self.current_block)])
         end_val = self._process_expression(stmt.end)
         step_val = "1"
         if stmt.step:
@@ -152,6 +165,7 @@ class SSAGenerator:
         ))
         self._emit(SSAInstruction("branch", operands=[loop_block]))
         self.current_block = exit_block
+
     def _process_do_while(self, stmt: DoWhile):
         loop_block = self._new_block("do_while_loop")
         body_block = self._new_block("do_while_body")
@@ -168,10 +182,13 @@ class SSAGenerator:
             self._process_statement(body_stmt)
         self._emit(SSAInstruction("branch", operands=[loop_block]))
         self.current_block = exit_block
+
     def _process_labeled_do_loop(self, stmt: LabeledDoLoop):
         self._process_do_loop(stmt)
+
     def _process_labeled_do_while(self, stmt: LabeledDoWhile):
         self._process_do_while(stmt)
+
     def _process_if_statement(self, stmt: IfStatement):
         cond_val = self._process_expression(stmt.condition)
         then_block = self._new_block("then")
@@ -208,6 +225,7 @@ class SSAGenerator:
                 self._process_statement(stmt_node)
             self._emit(SSAInstruction("branch", operands=[exit_block]))
         self.current_block = exit_block
+
     def _process_simple_if_statement(self, stmt: SimpleIfStatement):
         cond_val = self._process_expression(stmt.condition)
         then_block = self._new_block("then")
@@ -220,6 +238,7 @@ class SSAGenerator:
         self._process_statement(stmt.statement)
         self._emit(SSAInstruction("branch", operands=[exit_block]))
         self.current_block = exit_block
+
     def _process_print_statement(self, stmt: PrintStatement):
         operands = []
         for item in stmt.items:
@@ -229,6 +248,7 @@ class SSAGenerator:
             "print",
             operands=operands
         ))
+
     def _process_io_statement(self, stmt):
         if isinstance(stmt, ReadStatement):
             for item in stmt.items:
@@ -250,6 +270,7 @@ class SSAGenerator:
                 "write",
                 operands=operands
             ))
+
     def _process_call_statement(self, stmt: CallStatement):
         operands = []
         for arg in stmt.args:
@@ -259,6 +280,7 @@ class SSAGenerator:
             "call",
             operands=[stmt.name] + operands
         ))
+
     def _process_expression(self, expr: Expression) -> str:
         if isinstance(expr, IntegerLiteral):
             return str(expr.value)
@@ -295,6 +317,7 @@ class SSAGenerator:
         elif isinstance(expr, FunctionCall):
             return self._process_function_call(expr)
         return "unknown"
+
     def _process_binop(self, expr: BinaryOp) -> str:
         left = self._process_expression(expr.left)
         right = self._process_expression(expr.right)
@@ -330,6 +353,7 @@ class SSAGenerator:
             result=result
         ))
         return result
+
     def _process_unaryop(self, expr: UnaryOp) -> str:
         operand = self._process_expression(expr.operand)
         result = self._new_temp()
@@ -342,6 +366,7 @@ class SSAGenerator:
             result=result
         ))
         return result
+
     def _process_function_call(self, expr: FunctionCall) -> str:
         args = [self._process_expression(arg) for arg in expr.args]
         result = self._new_temp()
@@ -351,10 +376,12 @@ class SSAGenerator:
             result=result
         ))
         return result
+
     def _emit(self, instr: SSAInstruction):
         if self.current_block not in self.blocks:
             self.blocks[self.current_block] = []
         self.blocks[self.current_block].append(instr)
+
     def _emit_phi(self, var: str, predecessors: List[Tuple[str, str]]):
         operands = []
         for val, block in predecessors:
@@ -364,12 +391,15 @@ class SSAGenerator:
             operands=operands,
             result=var
         ))
+
     def _new_block(self, prefix: str = "block") -> str:
         self.block_counter += 1
         return f"{prefix}_{self.block_counter}"
+
     def _new_temp(self) -> str:
         self.temp_counter += 1
         return f"%tmp_{self.temp_counter}"
+
     def to_string(self, instructions: List[SSAInstruction]) -> str:
         lines = [
             "====== SSA REPRESENTATION ======",

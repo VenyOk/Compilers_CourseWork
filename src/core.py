@@ -1,8 +1,9 @@
-import sys
 import re
 from enum import Enum, auto
 from typing import List, Optional, Any, Tuple, Set
 from dataclasses import dataclass, field
+
+
 class TokenType(Enum):
     INTEGER_LIT = auto()
     REAL_LIT = auto()
@@ -77,14 +78,19 @@ class TokenType(Enum):
     IDENTIFIER = auto()
     COMMENT = auto()
     EOF = auto()
+
+
 @dataclass
 class Token:
     type: TokenType = TokenType.EOF
     value: Any = None
     line: int = 0
     col: int = 0
+
     def __str__(self):
         return f"{self.type.name}({self.value})"
+
+
 class Lexer:
     def __init__(self, text: str):
         self.text = text
@@ -150,11 +156,13 @@ class Lexer:
             ".EQV.": TokenType.EQV,
             ".NEQV.": TokenType.NEQV,
         }
+
     def peek(self, offset: int = 0) -> str:
         pos = self.pos + offset
         if pos >= self.len:
             return ''
         return self.text[pos]
+
     def advance(self) -> str:
         if self.pos >= self.len:
             return ''
@@ -166,9 +174,11 @@ class Lexer:
         else:
             self.col += 1
         return ch
+
     def skip_whitespace(self):
         while self.peek() and self.peek() in ' \t\f\r':
             self.advance()
+
     def read_comment(self) -> Token:
         start_line = self.line
         start_col = self.col
@@ -184,6 +194,7 @@ class Lexer:
         if self.peek() == '\n':
             self.advance()
         return Token(type=TokenType.COMMENT, value=comment_text, line=start_line, col=start_col)
+
     def read_number(self) -> Token:
         start_line = self.line
         start_col = self.col
@@ -339,6 +350,7 @@ class Lexer:
                 )
         else:
             return Token(type=TokenType.INTEGER_LIT, value=int(num_str), line=start_line, col=start_col)
+
     def read_string(self, quote_char: str) -> Token:
         start_line = self.line
         start_col = self.col
@@ -360,6 +372,7 @@ class Lexer:
                 f"Пример: 'текст' или \"текст\""
             )
         return Token(type=TokenType.STRING_LIT, value=string_val, line=start_line, col=start_col)
+
     def read_identifier_or_keyword(self) -> Token:
         start_line = self.line
         start_col = self.col
@@ -441,6 +454,7 @@ class Lexer:
                 f"Сократите имя до 6 символов или используйте другое имя. Пример: вместо '{ident}' используйте '{ident[:6]}'"
             )
         return Token(type=TokenType.IDENTIFIER, value=ident, line=start_line, col=start_col)
+
     def read_operator_or_delimiter(self) -> Optional[Token]:
         start_line = self.line
         start_col = self.col
@@ -511,6 +525,7 @@ class Lexer:
             self.advance()
             return Token(type=single_ops[ch], value=ch, line=start_line, col=start_col)
         return None
+
     def next_token(self) -> Token:
         while True:
             if self.peek() == '\n':
@@ -597,6 +612,7 @@ class Lexer:
             f"Символ '{char}' не является частью допустимых конструкций языка Fortran. "
             f"Проверьте правильность синтаксиса. Возможно, пропущен оператор или неверно написано ключевое слово."
         )
+
     def check_fortran_line_format(self, line_text: str, line_num: int):
         line_text = line_text.rstrip('\n\r')
         if len(line_text) > 80:
@@ -610,9 +626,11 @@ class Lexer:
             pass
         if line_text.strip() and not line_text.strip().startswith('C') and not line_text.strip().startswith('!'):
             if len(line_text) > 6:
-                statement_area = line_text[6:72] if len(line_text) > 72 else line_text[6:]
+                statement_area = line_text[6:72] if len(
+                    line_text) > 72 else line_text[6:]
                 if len(line_text) > 72 and line_text[72:80].strip():
                     pass
+
     def tokenize(self) -> List[Token]:
         lines = self.text.split('\n')
         processed_lines = []
@@ -646,27 +664,38 @@ class Lexer:
         except SyntaxError as e:
             raise
         return tokens
+
     def get_errors(self) -> List[str]:
         return self.errors
+
+
 @dataclass
 class ASTNode:
     line: int = 0
     col: int = 0
+
+
 @dataclass
 class Program(ASTNode):
     name: str = ""
     declarations: List['Declaration'] = field(default_factory=list)
     statements: List['Statement'] = field(default_factory=list)
+
     def __str__(self):
         return f"Program({self.name}, {len(self.declarations)} decls, {len(self.statements)} stmts)"
+
+
 @dataclass
 class Subroutine(ASTNode):
     name: str = ""
     params: List[str] = field(default_factory=list)
     declarations: List['Declaration'] = field(default_factory=list)
     statements: List['Statement'] = field(default_factory=list)
+
     def __str__(self):
         return f"Subroutine({self.name})"
+
+
 @dataclass
 class FunctionDef(ASTNode):
     name: str = ""
@@ -674,29 +703,40 @@ class FunctionDef(ASTNode):
     params: List[str] = field(default_factory=list)
     declarations: List['Declaration'] = field(default_factory=list)
     statements: List['Statement'] = field(default_factory=list)
+
     def __str__(self):
         return f"Function({self.name}: {self.return_type})"
+
+
 @dataclass
 class Declaration(ASTNode):
     type: str = ""
-    names: List[Tuple[str, Optional[List[Tuple[int, int]]]]] = field(default_factory=list)
+    names: List[Tuple[str, Optional[List[Tuple[int, int]]]]
+                ] = field(default_factory=list)
     type_size: Optional[int] = None
+
     def __str__(self):
         names_str = ", ".join(n[0] for n in self.names)
         return f"{self.type} {names_str}"
+
+
 @dataclass
 class ImplicitNone(ASTNode):
     def __str__(self):
         return "IMPLICIT NONE"
+
+
 @dataclass
 class ImplicitRule(ASTNode):
     type_name: str = ""
     type_size: Optional[int] = None
     letters: List[str] = field(default_factory=list)
+
     def __str__(self):
         size_str = f"*{self.type_size}" if self.type_size else ""
         letters_str = ", ".join(self.letters)
         return f"IMPLICIT {self.type_name}{size_str}({letters_str})"
+
     def get_letters(self) -> Set[str]:
         result = set()
         for letter_spec in self.letters:
@@ -716,57 +756,83 @@ class ImplicitRule(ASTNode):
                 if letter and letter.isalpha():
                     result.add(letter)
         return result
+
+
 @dataclass
 class ImplicitStatement(ASTNode):
     rules: List[ImplicitRule] = field(default_factory=list)
+
     def __str__(self):
         rules_str = ", ".join(str(rule) for rule in self.rules)
         return f"IMPLICIT {rules_str}"
+
+
 @dataclass
 class DimensionStatement(ASTNode):
-    names: List[Tuple[str, List[Tuple[int, int]]]] = field(default_factory=list)
+    names: List[Tuple[str, List[Tuple[int, int]]]
+                ] = field(default_factory=list)
+
     def __str__(self):
         def format_dim(dim_range: Tuple[int, int]) -> str:
             k, l = dim_range
             if k == 1:
                 return str(l)
             return f"{k}:{l}"
-        names_str = ", ".join(f"{n[0]}({','.join(format_dim(d) for d in n[1])})" for n in self.names)
+        names_str = ", ".join(
+            f"{n[0]}({','.join(format_dim(d) for d in n[1])})" for n in self.names)
         return f"DIMENSION {names_str}"
+
+
 @dataclass
 class ParameterStatement(ASTNode):
     params: List[Tuple[str, 'Expression']] = field(default_factory=list)
+
     def __str__(self):
         params_str = ", ".join(f"{name}={expr}" for name, expr in self.params)
         return f"PARAMETER ({params_str})"
+
+
 @dataclass
 class Statement(ASTNode):
     pass
+
+
 @dataclass
 class DataItem(ASTNode):
     name: str = ""
     indices: List['Expression'] = field(default_factory=list)
+
     def __str__(self):
         if self.indices:
-            indices_str = "(" + ", ".join(str(idx) for idx in self.indices) + ")"
+            indices_str = "(" + ", ".join(str(idx)
+                                          for idx in self.indices) + ")"
             return f"{self.name}{indices_str}"
         return self.name
+
+
 @dataclass
 class DataStatement(Statement):
-    items: List[Tuple[List[DataItem], List['Expression']]] = field(default_factory=list)
+    items: List[Tuple[List[DataItem], List['Expression']]
+                ] = field(default_factory=list)
+
     def __str__(self):
         items_str = ", ".join(
             f"{','.join(str(item) for item in vars)} / {','.join(str(v) for v in vals)} /"
             for vars, vals in self.items
         )
         return f"DATA {items_str}"
+
+
 @dataclass
 class Assignment(Statement):
     target: str = ""
     value: 'Expression' = None
     indices: List['Expression'] = field(default_factory=list)
+
     def __str__(self):
         return f"Assign({self.target} = ...)"
+
+
 @dataclass
 class DoLoop(Statement):
     var: str = ""
@@ -774,81 +840,119 @@ class DoLoop(Statement):
     end: 'Expression' = None
     step: Optional['Expression'] = None
     body: List[Statement] = field(default_factory=list)
+
     def __str__(self):
         return f"DO {self.var} = ... END DO"
+
+
 @dataclass
 class DoWhile(Statement):
     condition: 'Expression' = None
     body: List[Statement] = field(default_factory=list)
+
     def __str__(self):
         return f"DO WHILE (...) END DO"
+
+
 @dataclass
 class SimpleIfStatement(Statement):
     condition: 'Expression' = None
     statement: 'Statement' = None
+
     def __str__(self):
         return f"IF (...) S"
+
+
 @dataclass
 class IfStatement(Statement):
     condition: 'Expression' = None
     then_body: List[Statement] = field(default_factory=list)
-    elif_parts: List[Tuple['Expression', List[Statement]]] = field(default_factory=list)
+    elif_parts: List[Tuple['Expression', List[Statement]]
+                     ] = field(default_factory=list)
     else_body: Optional[List[Statement]] = None
+
     def __str__(self):
         return f"IF (...) THEN ... END IF"
+
+
 @dataclass
 class PrintStatement(Statement):
     items: List['Expression'] = field(default_factory=list)
+
     def __str__(self):
         return f"PRINT {len(self.items)} items"
+
+
 @dataclass
 class ReadStatement(Statement):
     unit: str = ""
     format: str = ""
     items: List[str] = field(default_factory=list)
+
     def __str__(self):
         return f"READ ({self.unit}, {self.format}) {len(self.items)} items"
+
+
 @dataclass
 class WriteStatement(Statement):
     unit: str = ""
     format: str = ""
     items: List['Expression'] = field(default_factory=list)
+
     def __str__(self):
         return f"WRITE ({self.unit}, {self.format}) {len(self.items)} items"
+
+
 @dataclass
 class CallStatement(Statement):
     name: str = ""
     args: List['Expression'] = field(default_factory=list)
+
     def __str__(self):
         return f"CALL {self.name}"
+
+
 @dataclass
 class ReturnStatement(Statement):
     def __str__(self):
         return "RETURN"
+
+
 @dataclass
 class StopStatement(Statement):
     def __str__(self):
         return "STOP"
+
+
 @dataclass
 class GotoStatement(Statement):
     label: str = ""
+
     def __str__(self):
         return f"GOTO {self.label}"
+
+
 @dataclass
 class ContinueStatement(Statement):
     label: Optional[str] = None
+
     def __str__(self):
         if self.label:
             return f"CONTINUE ({self.label})"
         return "CONTINUE"
+
+
 @dataclass
 class ArithmeticIfStatement(Statement):
     condition: 'Expression' = None
     label_neg: str = ""
     label_zero: str = ""
     label_pos: str = ""
+
     def __str__(self):
         return f"IF({self.condition}) {self.label_neg}, {self.label_zero}, {self.label_pos}"
+
+
 @dataclass
 class LabeledDoLoop(Statement):
     label: str = ""
@@ -857,89 +961,130 @@ class LabeledDoLoop(Statement):
     end: 'Expression' = None
     step: Optional['Expression'] = None
     body: List[Statement] = field(default_factory=list)
+
     def __str__(self):
         return f"DO {self.label} {self.var} = ... END DO"
+
+
 @dataclass
 class LabeledDoWhile(Statement):
     label: str = ""
     condition: 'Expression' = None
     body: List[Statement] = field(default_factory=list)
+
     def __str__(self):
         return f"DO {self.label} WHILE(...) END DO"
+
+
 @dataclass
 class ExitStatement(Statement):
     def __str__(self):
         return "EXIT"
+
+
 @dataclass
 class Expression(ASTNode):
     pass
+
+
 @dataclass
 class BinaryOp(Expression):
     left: Expression = None
     op: str = ""
     right: Expression = None
+
     def __str__(self):
         return f"({self.op})"
+
+
 @dataclass
 class UnaryOp(Expression):
     op: str = ""
     operand: Expression = None
+
     def __str__(self):
         return f"({self.op} ...)"
+
+
 @dataclass
 class FunctionCall(Expression):
     name: str = ""
     args: List[Expression] = field(default_factory=list)
+
     def __str__(self):
         return f"{self.name}(...)"
+
+
 @dataclass
 class ArrayRef(Expression):
     name: str = ""
     indices: List['Expression'] = field(default_factory=list)
+
     def __str__(self):
         return f"{self.name}[...]"
+
+
 @dataclass
 class Variable(Expression):
     name: str = ""
+
     def __str__(self):
         return f"{self.name}"
+
+
 @dataclass
 class IntegerLiteral(Expression):
     value: int = 0
+
     def __str__(self):
         return str(self.value)
+
+
 @dataclass
 class RealLiteral(Expression):
     value: float = 0.0
+
     def __str__(self):
         return str(self.value)
+
+
 @dataclass
 class StringLiteral(Expression):
     value: str = ""
+
     def __str__(self):
         return repr(self.value)
+
+
 @dataclass
 class LogicalLiteral(Expression):
     value: bool = False
+
     def __str__(self):
         return ".TRUE." if self.value else ".FALSE."
+
+
 class Parser:
     def __init__(self, tokens: List[Token]):
         self.tokens = tokens
         self.pos = 0
+
     def current(self) -> Token:
         if self.pos < len(self.tokens):
             return self.tokens[self.pos]
         return Token(type=TokenType.EOF, value=None, line=0, col=0)
+
     def peek(self, offset: int = 1) -> Token:
         pos = self.pos + offset
         if pos < len(self.tokens):
             return self.tokens[pos]
         return Token(type=TokenType.EOF, value=None, line=0, col=0)
+
     def advance(self) -> Token:
         token = self.current()
         self.pos += 1
         return token
+
     def expect(self, token_type: TokenType) -> Token:
         if self.current().type != token_type:
             current = self.current()
@@ -971,13 +1116,17 @@ class Parser:
                 f"Проверьте правильность синтаксиса. Возможно, пропущен символ или неверно написано ключевое слово."
             )
         return self.advance()
+
     def match(self, *token_types: TokenType) -> bool:
         return self.current().type in token_types
+
     def skip_comments(self):
         while self.match(TokenType.COMMENT):
             self.advance()
+
     def parse(self) -> Program:
         return self.parse_program()
+
     def parse_program(self) -> Program:
         self.skip_comments()
         name = "MAIN"
@@ -1016,6 +1165,7 @@ class Parser:
             statements.append(stmt)
         self.expect(TokenType.END)
         return Program(name=name, declarations=declarations, statements=statements)
+
     def parse_declaration(self) -> List[Declaration]:
         decls = []
         if self.match(TokenType.INTEGER, TokenType.REAL, TokenType.LOGICAL, TokenType.COMPLEX, TokenType.CHARACTER):
@@ -1051,17 +1201,25 @@ class Parser:
                     self.advance()
                     dim_ranges = []
                     while True:
+                        first_negative = False
+                        if self.match(TokenType.MINUS):
+                            self.advance()
+                            first_negative = True
                         if self.match(TokenType.INTEGER_LIT):
                             first_token = self.advance()
-                            first_value = first_token.value
+                            first_value = -first_token.value if first_negative else first_token.value
                             if self.match(TokenType.COLON):
                                 self.advance()
+                                second_negative = False
+                                if self.match(TokenType.MINUS):
+                                    self.advance()
+                                    second_negative = True
                                 if not self.match(TokenType.INTEGER_LIT):
                                     raise SyntaxError(
                                         f"Ожидается целое число после ':' в диапазоне индексов на строке {self.current().line}:{self.current().col}"
                                     )
                                 second_token = self.advance()
-                                second_value = second_token.value
+                                second_value = -second_token.value if second_negative else second_token.value
                                 dim_ranges.append((first_value, second_value))
                             elif self.match(TokenType.COMMA, TokenType.RPAREN):
                                 dim_ranges.append(first_value)
@@ -1093,10 +1251,13 @@ class Parser:
                 if not self.match(TokenType.COMMA):
                     break
                 self.advance()
-            decls.append(Declaration(type=type_name, names=names, type_size=type_size))
+            decls.append(Declaration(type=type_name,
+                         names=names, type_size=type_size))
         else:
-            raise SyntaxError(f"Ожидается объявление типа (INTEGER/REAL/COMPLEX/CHARACTER/LOGICAL) на строке {self.current().line}:{self.current().col}")
+            raise SyntaxError(
+                f"Ожидается объявление типа (INTEGER/REAL/COMPLEX/CHARACTER/LOGICAL) на строке {self.current().line}:{self.current().col}")
         return decls
+
     def parse_implicit_statement(self):
         self.expect(TokenType.IMPLICIT)
         if self.match(TokenType.NONE):
@@ -1159,12 +1320,14 @@ class Parser:
                     break
                 self.advance()
             self.expect(TokenType.RPAREN)
-            rule = ImplicitRule(type_name=type_name, type_size=type_size, letters=letters)
+            rule = ImplicitRule(type_name=type_name,
+                                type_size=type_size, letters=letters)
             rules.append(rule)
             if not self.match(TokenType.COMMA):
                 break
             self.advance()
         return ImplicitStatement(rules=rules)
+
     def parse_dimension_statement(self) -> 'DimensionStatement':
         self.expect(TokenType.DIMENSION)
         names = []
@@ -1174,17 +1337,25 @@ class Parser:
             self.expect(TokenType.LPAREN)
             dim_ranges = []
             while True:
+                first_negative = False
+                if self.match(TokenType.MINUS):
+                    self.advance()
+                    first_negative = True
                 if self.match(TokenType.INTEGER_LIT):
                     first_token = self.advance()
-                    first_value = first_token.value
+                    first_value = -first_token.value if first_negative else first_token.value
                     if self.match(TokenType.COLON):
                         self.advance()
+                        second_negative = False
+                        if self.match(TokenType.MINUS):
+                            self.advance()
+                            second_negative = True
                         if not self.match(TokenType.INTEGER_LIT):
                             raise SyntaxError(
                                 f"Ожидается целое число после ':' в диапазоне индексов на строке {self.current().line}:{self.current().col}"
                             )
                         second_token = self.advance()
-                        second_value = second_token.value
+                        second_value = -second_token.value if second_negative else second_token.value
                         dim_ranges.append((first_value, second_value))
                     elif self.match(TokenType.COMMA, TokenType.RPAREN):
                         dim_ranges.append((1, first_value))
@@ -1215,6 +1386,7 @@ class Parser:
                 break
             self.advance()
         return DimensionStatement(names=names)
+
     def parse_parameter_statement(self) -> 'ParameterStatement':
         self.expect(TokenType.PARAMETER)
         self.expect(TokenType.LPAREN)
@@ -1230,6 +1402,7 @@ class Parser:
             self.advance()
         self.expect(TokenType.RPAREN)
         return ParameterStatement(params=params)
+
     def parse_data_statement(self) -> 'DataStatement':
         self.expect(TokenType.DATA)
         items = []
@@ -1265,6 +1438,7 @@ class Parser:
                 break
             self.advance()
         return DataStatement(items=items)
+
     def parse_statement(self) -> Statement:
         self.skip_comments()
         label = None
@@ -1273,8 +1447,8 @@ class Parser:
             label_token = self.advance()
             label = str(label_token.value)
             if not self.match(TokenType.IF, TokenType.DO, TokenType.PRINT, TokenType.READ,
-                            TokenType.WRITE, TokenType.STOP, TokenType.GOTO, TokenType.CONTINUE,
-                            TokenType.DATA, TokenType.IDENTIFIER):
+                              TokenType.WRITE, TokenType.STOP, TokenType.GOTO, TokenType.CONTINUE,
+                              TokenType.DATA, TokenType.IDENTIFIER):
                 self.pos = saved_pos
                 label = None
         if self.match(TokenType.IF):
@@ -1310,6 +1484,7 @@ class Parser:
                 f"В этой позиции не ожидается оператор или ключевое слово. "
                 f"Проверьте правильность синтаксиса. Возможно, пропущен оператор, неправильно закрыта конструкция или лишний символ."
             )
+
     def parse_assignment_or_label(self) -> Statement:
         name_token = self.expect(TokenType.IDENTIFIER)
         name = name_token.value
@@ -1333,6 +1508,7 @@ class Parser:
                 f"Получено: {current.type.name}{f' ({current.value})' if current.value else ''}. "
                 f"Проверьте, что после имени переменной '{name}' стоит знак '=' для присваивания значения."
             )
+
     def parse_assignment(self) -> Assignment:
         name_token = self.expect(TokenType.IDENTIFIER)
         name = name_token.value
@@ -1348,6 +1524,7 @@ class Parser:
         assign_token = self.expect(TokenType.ASSIGN_OP)
         value = self.parse_expression()
         return Assignment(name, value, indices, name_token.line, name_token.col)
+
     def parse_if_statement(self) -> Statement:
         self.expect(TokenType.IF)
         self.expect(TokenType.LPAREN)
@@ -1434,7 +1611,8 @@ class Parser:
                     )
                 self.advance()
             elif self.match(TokenType.IF) and self.pos > 0:
-                prev_token = self.tokens[self.pos - 1] if self.pos > 0 else None
+                prev_token = self.tokens[self.pos -
+                                         1] if self.pos > 0 else None
                 if prev_token and prev_token.type == TokenType.END:
                     self.advance()
                 else:
@@ -1449,6 +1627,7 @@ class Parser:
         else:
             statement = self.parse_statement()
             return SimpleIfStatement(condition=condition, statement=statement)
+
     def is_else_if(self) -> bool:
         if self.match(TokenType.ELSE):
             saved_pos = self.pos
@@ -1457,6 +1636,7 @@ class Parser:
                 return True
             self.pos = saved_pos
         return False
+
     def is_if_terminator(self) -> bool:
         if self.match(TokenType.ELSE, TokenType.ELSEIF, TokenType.ENDIF):
             return True
@@ -1467,6 +1647,7 @@ class Parser:
                 return True
             self.pos = saved_pos
         return False
+
     def parse_do_loop(self) -> Statement:
         self.expect(TokenType.DO)
         label = None
@@ -1563,18 +1744,20 @@ class Parser:
                         f"Ожидается ENDDO или END DO на строке {self.current().line}:{self.current().col}"
                     )
                 return DoLoop(var=var_name, start=start, end=end, step=step, body=body)
+
     def parse_print_statement(self) -> PrintStatement:
         self.expect(TokenType.PRINT)
         self.expect(TokenType.STAR)
         self.expect(TokenType.COMMA)
         items = []
         while not self.match(TokenType.ENDDO, TokenType.ENDIF, TokenType.END, TokenType.EOF,
-                            TokenType.STOP, TokenType.CONTINUE, TokenType.GOTO):
+                             TokenType.STOP, TokenType.CONTINUE, TokenType.GOTO):
             items.append(self.parse_expression())
             if not self.match(TokenType.COMMA):
                 break
             self.advance()
         return PrintStatement(items=items)
+
     def parse_read_statement(self) -> ReadStatement:
         self.expect(TokenType.READ)
         if self.match(TokenType.LPAREN):
@@ -1590,13 +1773,14 @@ class Parser:
             self.advance()
         items = []
         while not self.match(TokenType.ENDDO, TokenType.ENDIF, TokenType.END, TokenType.EOF,
-                            TokenType.STOP, TokenType.CONTINUE, TokenType.GOTO):
+                             TokenType.STOP, TokenType.CONTINUE, TokenType.GOTO):
             item_token = self.expect(TokenType.IDENTIFIER)
             items.append(item_token.value)
             if not self.match(TokenType.COMMA):
                 break
             self.advance()
         return ReadStatement(unit="*", format="*", items=items)
+
     def parse_write_statement(self) -> WriteStatement:
         self.expect(TokenType.WRITE)
         self.expect(TokenType.LPAREN)
@@ -1609,53 +1793,65 @@ class Parser:
         self.expect(TokenType.RPAREN)
         items = []
         while not self.match(TokenType.ENDDO, TokenType.ENDIF, TokenType.END, TokenType.EOF,
-                            TokenType.STOP, TokenType.CONTINUE, TokenType.GOTO):
+                             TokenType.STOP, TokenType.CONTINUE, TokenType.GOTO):
             items.append(self.parse_expression())
             if not self.match(TokenType.COMMA):
                 break
             self.advance()
         return WriteStatement(unit=unit, format=format_, items=items)
+
     def parse_goto_statement(self) -> GotoStatement:
         self.expect(TokenType.GOTO)
         label_token = self.expect(TokenType.INTEGER_LIT)
         return GotoStatement(label=str(label_token.value))
+
     def parse_expression(self) -> Expression:
         return self.parse_eqv_expression()
+
     def parse_eqv_expression(self) -> Expression:
         left = self.parse_or_expression()
         while self.match(TokenType.EQV, TokenType.NEQV):
             op_token = self.advance()
             right = self.parse_or_expression()
-            left = BinaryOp(left=left, op=op_token.value.upper(), right=right, line=0, col=0)
+            left = BinaryOp(left=left, op=op_token.value.upper(),
+                            right=right, line=0, col=0)
         return left
+
     def parse_or_expression(self) -> Expression:
         left = self.parse_and_expression()
         while self.match(TokenType.OR):
             op_token = self.advance()
             right = self.parse_and_expression()
-            left = BinaryOp(left=left, op=op_token.value.upper(), right=right, line=0, col=0)
+            left = BinaryOp(left=left, op=op_token.value.upper(),
+                            right=right, line=0, col=0)
         return left
+
     def parse_and_expression(self) -> Expression:
         left = self.parse_not_expression()
         while self.match(TokenType.AND):
             op_token = self.advance()
             right = self.parse_not_expression()
-            left = BinaryOp(left=left, op=op_token.value.upper(), right=right, line=0, col=0)
+            left = BinaryOp(left=left, op=op_token.value.upper(),
+                            right=right, line=0, col=0)
         return left
+
     def parse_not_expression(self) -> Expression:
         if self.match(TokenType.NOT):
             op_token = self.advance()
             expr = self.parse_not_expression()
             return UnaryOp(op=op_token.value.upper(), operand=expr)
         return self.parse_relational_expression()
+
     def parse_relational_expression(self) -> Expression:
         left = self.parse_additive_expression()
         while self.match(TokenType.EQ, TokenType.NE, TokenType.LT, TokenType.LE,
                          TokenType.GT, TokenType.GE):
             op_token = self.advance()
             right = self.parse_additive_expression()
-            left = BinaryOp(left=left, op=op_token.value.upper(), right=right, line=0, col=0)
+            left = BinaryOp(left=left, op=op_token.value.upper(),
+                            right=right, line=0, col=0)
         return left
+
     def parse_additive_expression(self) -> Expression:
         left = self.parse_concat_expression()
         while self.match(TokenType.PLUS, TokenType.MINUS):
@@ -1668,15 +1864,19 @@ class Parser:
                     f"Используйте скобки, например: X/(-Y) вместо X/-Y"
                 )
             right = self.parse_concat_expression()
-            left = BinaryOp(left=left, op=op_token.value, right=right, line=0, col=0)
+            left = BinaryOp(left=left, op=op_token.value,
+                            right=right, line=0, col=0)
         return left
+
     def parse_concat_expression(self) -> Expression:
         left = self.parse_multiplicative_expression()
         while self.match(TokenType.CONCAT):
             op_token = self.advance()
             right = self.parse_multiplicative_expression()
-            left = BinaryOp(left=left, op=op_token.value, right=right, line=0, col=0)
+            left = BinaryOp(left=left, op=op_token.value,
+                            right=right, line=0, col=0)
         return left
+
     def parse_multiplicative_expression(self) -> Expression:
         left = self.parse_power_expression()
         while self.match(TokenType.STAR, TokenType.SLASH):
@@ -1689,15 +1889,19 @@ class Parser:
                     f"Используйте скобки, например: X/(-Y) вместо X/-Y"
                 )
             right = self.parse_power_expression()
-            left = BinaryOp(left=left, op=op_token.value, right=right, line=0, col=0)
+            left = BinaryOp(left=left, op=op_token.value,
+                            right=right, line=0, col=0)
         return left
+
     def parse_power_expression(self) -> Expression:
         left = self.parse_unary_expression()
         while self.match(TokenType.POWER):
             op_token = self.advance()
             right = self.parse_unary_expression()
-            left = BinaryOp(left=left, op=op_token.value, right=right, line=op_token.line, col=op_token.col)
+            left = BinaryOp(left=left, op=op_token.value,
+                            right=right, line=op_token.line, col=op_token.col)
         return left
+
     def parse_unary_expression(self) -> Expression:
         if self.match(TokenType.PLUS, TokenType.MINUS):
             op_token = self.advance()
@@ -1711,6 +1915,7 @@ class Parser:
             expr = self.parse_unary_expression()
             return UnaryOp(op=op_token.value, operand=expr)
         return self.parse_primary_expression()
+
     def parse_primary_expression(self) -> Expression:
         if self.match(TokenType.LPAREN):
             self.advance()
@@ -1733,11 +1938,11 @@ class Parser:
             token = self.advance()
             return LogicalLiteral(value=False, line=token.line, col=token.col)
         elif self.match(TokenType.SIN, TokenType.COS, TokenType.TAN,
-                       TokenType.ASIN, TokenType.ACOS, TokenType.ATAN,
-                       TokenType.ABS, TokenType.SQRT, TokenType.EXP,
-                       TokenType.LOG, TokenType.LOG10,
-                       TokenType.MIN, TokenType.MAX, TokenType.MOD,
-                       TokenType.REAL_FUNC, TokenType.FLOAT):
+                        TokenType.ASIN, TokenType.ACOS, TokenType.ATAN,
+                        TokenType.ABS, TokenType.SQRT, TokenType.EXP,
+                        TokenType.LOG, TokenType.LOG10,
+                        TokenType.MIN, TokenType.MAX, TokenType.MOD,
+                        TokenType.REAL_FUNC, TokenType.FLOAT):
             func_token = self.advance()
             self.expect(TokenType.LPAREN)
             args = []
@@ -1774,6 +1979,8 @@ class Parser:
             f"Неожиданный токен {self.current().type.name} "
             f"на строке {self.current().line}:{self.current().col}: {self.current().value}"
         )
+
+
 def pretty_print_ast(node: ASTNode, indent: int = 0) -> str:
     prefix = "  " * indent
     if isinstance(node, Program):
@@ -1823,7 +2030,8 @@ def pretty_print_ast(node: ASTNode, indent: int = 0) -> str:
         return result
     elif isinstance(node, DataItem):
         if node.indices:
-            indices_str = "(" + ", ".join(pretty_print_ast(idx, 0).strip() for idx in node.indices) + ")"
+            indices_str = "(" + ", ".join(pretty_print_ast(idx, 0).strip()
+                                          for idx in node.indices) + ")"
             return f"{prefix}DATA_ITEM: {node.name}{indices_str}\n"
         return f"{prefix}DATA_ITEM: {node.name}\n"
     elif isinstance(node, Declaration):
@@ -1836,7 +2044,8 @@ def pretty_print_ast(node: ASTNode, indent: int = 0) -> str:
                     if k == 1:
                         return str(l)
                     return f"{k}:{l}"
-                dims_str = "(" + ", ".join(format_dim(d) for d in dim_ranges) + ")"
+                dims_str = "(" + ", ".join(format_dim(d)
+                                           for d in dim_ranges) + ")"
                 names_parts.append(f"{name}{dims_str}")
             else:
                 names_parts.append(name)
@@ -1847,7 +2056,8 @@ def pretty_print_ast(node: ASTNode, indent: int = 0) -> str:
         result = f"{prefix}ASSIGNMENT:{coord_str}\n"
         result += f"{prefix}  target: {node.target}"
         if node.indices:
-            indices_str = "[" + ", ".join(pretty_print_ast(idx, 0).strip() for idx in node.indices) + "]"
+            indices_str = "[" + ", ".join(pretty_print_ast(idx, 0).strip()
+                                          for idx in node.indices) + "]"
             result += indices_str
         result += "\n"
         result += f"{prefix}  value: {pretty_print_ast(node.value, indent + 1)}"
@@ -1970,6 +2180,8 @@ def pretty_print_ast(node: ASTNode, indent: int = 0) -> str:
         return f"{prefix}LOGICAL_LITERAL: {val_str} (value: {node.value}){coord_str}\n"
     else:
         return f"{prefix}{node}\n"
+
+
 def main():
     test_code = """
 PROGRAM FACTORIAL
@@ -1993,5 +2205,7 @@ END
     ast = parser.parse()
     print("AST:")
     print(pretty_print_ast(ast))
+
+
 if __name__ == "__main__":
     main()
