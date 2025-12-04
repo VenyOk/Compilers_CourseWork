@@ -52,6 +52,9 @@ class LLVMGenerator:
         }
         self.implicit_rules = {}
         self.implicit_none = False
+        # Для отслеживания phi-функций
+        self.var_ssa_versions: Dict[str, str] = {}  # Имя переменной -> текущая SSA версия
+        self.phi_tracking: List[Dict[str, str]] = []  # Стек для отслеживания переменных в ветках
 
     def generate(self, ast: Program) -> str:
         self.code_lines = []
@@ -62,6 +65,8 @@ class LLVMGenerator:
         self.labels = {}
         self.statement_functions = {}
         self.char_lengths = {}
+        self.var_ssa_versions = {}
+        self.phi_tracking = []
         
         for stmt_func in ast.statement_functions:
             if hasattr(stmt_func, 'name') and stmt_func.name:
@@ -175,6 +180,8 @@ class LLVMGenerator:
             self.code_lines.append("entry:")
             self.local_counter = 0
             self.var_alloc = {}
+            self.var_ssa_versions = {}
+            self.phi_tracking = []
             self._emit_declarations(ast.declarations)
             for stmt in ast.statements:
                 self._emit_statement(stmt)
@@ -187,6 +194,8 @@ class LLVMGenerator:
             self.code_lines.append("entry:")
             self.local_counter = 0
             self.var_alloc = {}
+            self.var_ssa_versions = {}
+            self.phi_tracking = []
             self._emit_declarations(ast.declarations)
             self.code_lines.append("  ret i32 0")
             self.code_lines.append("}")
@@ -317,8 +326,20 @@ class LLVMGenerator:
                     self.code_lines.append(
                         f"  store {{double, double}} {rhs_val}, {{double, double}}* {ptr_name}")
                 else:
-                    self.code_lines.append(
-                        f"  store {base_type} {rhs_val}, {base_type}* {ptr_name}")
+                    # Если мы в ветке условного оператора, отслеживаем для phi
+                    if self.phi_tracking:
+                        # Сохраняем значение
+                        self.code_lines.append(
+                            f"  store {base_type} {rhs_val}, {base_type}* {ptr_name}")
+                        # Загружаем обратно для phi
+                        new_ssa = self._new_local()
+                        self.code_lines.append(
+                            f"  {new_ssa} = load {base_type}, {base_type}* {ptr_name}")
+                        # Сохраняем SSA версию для phi
+                        self.phi_tracking[-1][stmt.target] = new_ssa
+                    else:
+                        self.code_lines.append(
+                            f"  store {base_type} {rhs_val}, {base_type}* {ptr_name}")
 
     def _emit_do_loop(self, stmt: DoLoop):
         loop_id = self._new_block_id()
@@ -405,6 +426,23 @@ class LLVMGenerator:
             self.code_lines.append(
                 f"  {cond_bool} = icmp ne {cond_type} {cond_val}, 0")
             cond_val = cond_bool
+        
+        before_phi_vars = {}
+        for var_name in self.var_alloc:
+            if var_name in self.var_ssa_versions:
+                before_phi_vars[var_name] = self.var_ssa_versions[var_name]
+            else:
+                alloc_type, ptr_name = self.var_alloc[var_name]
+                base_type = alloc_type if '[' not in alloc_type else alloc_type.split('[')[1].split(']')[0].split(' x ')[1]
+                before_val = self._new_local()
+                self.code_lines.append(
+                    f"  {before_val} = load {base_type}, {base_type}* {ptr_name}")
+                before_phi_vars[var_name] = before_val
+        
+        self.phi_tracking.append({})
+        then_phi_vars = {}
+        elif_phi_vars_list = []
+        
         if stmt.elif_parts:
             elif_labels = []
             for i, (elif_cond, _) in enumerate(stmt.elif_parts):
@@ -417,7 +455,9 @@ class LLVMGenerator:
             self.code_lines.append(f"{then_label}:")
             for s in stmt.then_body:
                 self._emit_statement(s)
+            then_phi_vars = self.phi_tracking[-1].copy()
             self.code_lines.append(f"  br label %{endif_label}")
+            
             for i, (elif_cond, elif_body) in enumerate(stmt.elif_parts):
                 self.code_lines.append(f"{elif_labels[i]}:")
                 elif_cond_val, elif_cond_type = self._emit_expression(
@@ -432,13 +472,19 @@ class LLVMGenerator:
                 self.code_lines.append(
                     f"  br i1 {elif_cond_val}, label %if_elif_then_{if_id}_{i}, label %{next_elif_label}")
                 self.code_lines.append(f"if_elif_then_{if_id}_{i}:")
+                self.phi_tracking[-1] = {}
                 for s in elif_body:
                     self._emit_statement(s)
+                elif_phi_vars_list.append(self.phi_tracking[-1].copy())
                 self.code_lines.append(f"  br label %{endif_label}")
+            
+            else_phi_vars = {}
             if stmt.else_body:
                 self.code_lines.append(f"{else_label}:")
+                self.phi_tracking[-1] = {}
                 for s in stmt.else_body:
                     self._emit_statement(s)
+                else_phi_vars = self.phi_tracking[-1].copy()
                 self.code_lines.append(f"  br label %{endif_label}")
         else:
             else_label = f"if_else_{if_id}" if stmt.else_body else endif_label
@@ -447,13 +493,74 @@ class LLVMGenerator:
             self.code_lines.append(f"{then_label}:")
             for s in stmt.then_body:
                 self._emit_statement(s)
+            then_phi_vars = self.phi_tracking[-1].copy()
             self.code_lines.append(f"  br label %{endif_label}")
+            
+            else_phi_vars = {}
             if stmt.else_body:
                 self.code_lines.append(f"{else_label}:")
+                self.phi_tracking[-1] = {}
                 for s in stmt.else_body:
                     self._emit_statement(s)
+                else_phi_vars = self.phi_tracking[-1].copy()
                 self.code_lines.append(f"  br label %{endif_label}")
+        
+        phi_instructions = []
+        all_modified_vars = set(then_phi_vars.keys())
+        for elif_vars in elif_phi_vars_list:
+            all_modified_vars.update(elif_vars.keys())
+        all_modified_vars.update(else_phi_vars.keys())
+        
+        for var_name in all_modified_vars:
+            if var_name not in self.var_alloc:
+                continue
+            
+            alloc_type, ptr_name = self.var_alloc[var_name]
+            base_type = alloc_type if '[' not in alloc_type else alloc_type.split('[')[1].split(']')[0].split(' x ')[1]
+            
+            phi_args = []
+            
+            if var_name in then_phi_vars:
+                phi_args.append(f"[{then_phi_vars[var_name]}, %{then_label}]")
+            else:
+                phi_args.append(f"[{before_phi_vars[var_name]}, %{then_label}]")
+            
+            for i, elif_vars in enumerate(elif_phi_vars_list):
+                elif_label = f"if_elif_then_{if_id}_{i}"
+                if var_name in elif_vars:
+                    phi_args.append(f"[{elif_vars[var_name]}, %{elif_label}]")
+                else:
+                    phi_args.append(f"[{before_phi_vars[var_name]}, %{elif_label}]")
+            
+            if stmt.else_body:
+                if var_name in else_phi_vars:
+                    phi_args.append(f"[{else_phi_vars[var_name]}, %{else_label}]")
+                else:
+                    phi_args.append(f"[{before_phi_vars[var_name]}, %{else_label}]")
+            
+            if len(phi_args) > 1:
+                phi_result = self._new_local()
+                phi_args_str = ", ".join(phi_args)
+                phi_instructions.append(
+                    f"  {phi_result} = phi {base_type} {phi_args_str}")
+                self.var_ssa_versions[var_name] = phi_result
+        
         self.code_lines.append(f"{endif_label}:")
+        for phi_line in phi_instructions:
+            self.code_lines.append(phi_line)
+        
+        for var_name in all_modified_vars:
+            if var_name not in self.var_alloc:
+                continue
+            if var_name in self.var_ssa_versions:
+                alloc_type, ptr_name = self.var_alloc[var_name]
+                base_type = alloc_type if '[' not in alloc_type else alloc_type.split('[')[1].split(']')[0].split(' x ')[1]
+                phi_result = self.var_ssa_versions[var_name]
+                self.code_lines.append(
+                    f"  store {base_type} {phi_result}, {base_type}* {ptr_name}")
+        
+        if self.phi_tracking:
+            self.phi_tracking.pop()
 
     def _emit_simple_if_statement(self, stmt: SimpleIfStatement):
         if_id = self._new_block_id()
@@ -465,12 +572,59 @@ class LLVMGenerator:
             self.code_lines.append(
                 f"  {cond_bool} = icmp ne {cond_type} {cond_val}, 0")
             cond_val = cond_bool
+        
+        before_phi_vars = {}
+        for var_name in self.var_alloc:
+            if var_name in self.var_ssa_versions:
+                before_phi_vars[var_name] = self.var_ssa_versions[var_name]
+            else:
+                alloc_type, ptr_name = self.var_alloc[var_name]
+                base_type = alloc_type if '[' not in alloc_type else alloc_type.split('[')[1].split(']')[0].split(' x ')[1]
+                before_val = self._new_local()
+                self.code_lines.append(
+                    f"  {before_val} = load {base_type}, {base_type}* {ptr_name}")
+                before_phi_vars[var_name] = before_val
+        
+        self.phi_tracking.append({})
+        
         self.code_lines.append(
             f"  br i1 {cond_val}, label %{then_label}, label %{endif_label}")
         self.code_lines.append(f"{then_label}:")
         self._emit_statement(stmt.statement)
+        
+        then_phi_vars = self.phi_tracking[-1].copy()
         self.code_lines.append(f"  br label %{endif_label}")
+        
+        phi_instructions = []
+        for var_name in then_phi_vars:
+            if var_name not in self.var_alloc:
+                continue
+            
+            alloc_type, ptr_name = self.var_alloc[var_name]
+            base_type = alloc_type if '[' not in alloc_type else alloc_type.split('[')[1].split(']')[0].split(' x ')[1]
+            
+            before_val = before_phi_vars[var_name]
+            phi_result = self._new_local()
+            prev_label = "entry"
+            phi_args_str = f"[{before_val}, %{prev_label}], [{then_phi_vars[var_name]}, %{then_label}]"
+            phi_instructions.append(
+                f"  {phi_result} = phi {base_type} {phi_args_str}")
+            self.var_ssa_versions[var_name] = phi_result
+        
         self.code_lines.append(f"{endif_label}:")
+        for phi_line in phi_instructions:
+            self.code_lines.append(phi_line)
+        
+        for var_name in then_phi_vars:
+            if var_name in self.var_ssa_versions:
+                alloc_type, ptr_name = self.var_alloc[var_name]
+                base_type = alloc_type if '[' not in alloc_type else alloc_type.split('[')[1].split(']')[0].split(' x ')[1]
+                phi_result = self.var_ssa_versions[var_name]
+                self.code_lines.append(
+                    f"  store {base_type} {phi_result}, {base_type}* {ptr_name}")
+        
+        if self.phi_tracking:
+            self.phi_tracking.pop()
 
     def _emit_print_statement(self, stmt: PrintStatement):
         if not stmt.items:
@@ -1022,6 +1176,8 @@ class LLVMGenerator:
         self.var_alloc = {}
         self.local_counter = 0
         self.block_counter = 0
+        self.var_ssa_versions = {}
+        self.phi_tracking = []
         
         param_list = []
         param_types = {}
@@ -1067,6 +1223,8 @@ class LLVMGenerator:
         self.var_alloc = {}
         self.local_counter = 0
         self.block_counter = 0
+        self.var_ssa_versions = {}
+        self.phi_tracking = []
         
         return_type = "i32"
         if func.return_type:
