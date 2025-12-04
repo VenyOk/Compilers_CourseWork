@@ -48,6 +48,7 @@ class TokenType(Enum):
     MIN = auto()
     MAX = auto()
     MOD = auto()
+    POW = auto()
     INT_FUNC = auto()
     REAL_FUNC = auto()
     FLOAT = auto()
@@ -75,6 +76,13 @@ class TokenType(Enum):
     NEQV = auto()
     TRUE = auto()
     FALSE = auto()
+    CALL = auto()
+    RETURN = auto()
+    SUBROUTINE = auto()
+    FUNCTION = auto()
+    EXTERNAL = auto()
+    COMMON = auto()
+    EXIT = auto()
     IDENTIFIER = auto()
     COMMENT = auto()
     EOF = auto()
@@ -141,7 +149,15 @@ class Lexer:
             "MIN": TokenType.MIN,
             "MAX": TokenType.MAX,
             "MOD": TokenType.MOD,
+            "POW": TokenType.POW,
             "FLOAT": TokenType.FLOAT,
+            "CALL": TokenType.CALL,
+            "RETURN": TokenType.RETURN,
+            "SUBROUTINE": TokenType.SUBROUTINE,
+            "FUNCTION": TokenType.FUNCTION,
+            "EXTERNAL": TokenType.EXTERNAL,
+            "COMMON": TokenType.COMMON,
+            "EXIT": TokenType.EXIT,
             ".TRUE.": TokenType.TRUE,
             ".FALSE.": TokenType.FALSE,
             ".EQ.": TokenType.EQ,
@@ -680,6 +696,9 @@ class Program(ASTNode):
     name: str = ""
     declarations: List['Declaration'] = field(default_factory=list)
     statements: List['Statement'] = field(default_factory=list)
+    statement_functions: List = field(default_factory=list)
+    subroutines: List['Subroutine'] = field(default_factory=list)
+    functions: List['FunctionDef'] = field(default_factory=list)
 
     def __str__(self):
         return f"Program({self.name}, {len(self.declarations)} decls, {len(self.statements)} stmts)"
@@ -943,6 +962,34 @@ class ContinueStatement(Statement):
 
 
 @dataclass
+class ExternalStatement(ASTNode):
+    names: List[str] = field(default_factory=list)
+
+    def __str__(self):
+        return f"EXTERNAL {', '.join(self.names)}"
+
+
+@dataclass
+class CommonStatement(ASTNode):
+    blocks: List[Tuple[str, List['Variable']]] = field(default_factory=list)
+
+    def __str__(self):
+        parts = []
+        for block_name, vars in self.blocks:
+            if block_name:
+                parts.append(f"/{block_name}/ {', '.join(str(v) for v in vars)}")
+            else:
+                parts.append(f"{', '.join(str(v) for v in vars)}")
+        return f"COMMON {', '.join(parts)}"
+
+
+@dataclass
+class ExitStatement(Statement):
+    def __str__(self):
+        return "EXIT"
+
+
+@dataclass
 class ArithmeticIfStatement(Statement):
     condition: 'Expression' = None
     label_neg: str = ""
@@ -1064,6 +1111,15 @@ class LogicalLiteral(Expression):
         return ".TRUE." if self.value else ".FALSE."
 
 
+@dataclass
+class ComplexLiteral(Expression):
+    real_part: float = 0.0
+    imag_part: float = 0.0
+
+    def __str__(self):
+        return f"({self.real_part}, {self.imag_part})"
+
+
 class Parser:
     def __init__(self, tokens: List[Token]):
         self.tokens = tokens
@@ -1156,15 +1212,78 @@ class Parser:
             else:
                 declarations.extend(self.parse_declaration())
             self.skip_comments()
+            if not self.match(TokenType.INTEGER, TokenType.REAL, TokenType.LOGICAL, TokenType.COMPLEX, TokenType.CHARACTER,
+                             TokenType.DIMENSION, TokenType.PARAMETER, TokenType.DATA):
+                break
+        
+        if (not name or name == "MAIN"):
+            next_token = self.current()
+            if (next_token.type == TokenType.SUBROUTINE or 
+                next_token.type == TokenType.FUNCTION or
+                (next_token.type in (TokenType.INTEGER, TokenType.REAL, TokenType.LOGICAL) and 
+                 self.peek().type == TokenType.FUNCTION)):
+                subroutines = []
+                functions = []
+                while not self.match(TokenType.EOF):
+                    self.skip_comments()
+                    if self.match(TokenType.EOF):
+                        break
+                    if self.match(TokenType.SUBROUTINE):
+                        subroutines.append(self.parse_subroutine())
+                    elif self.match(TokenType.INTEGER, TokenType.REAL, TokenType.LOGICAL):
+                        saved_pos = self.pos
+                        self.advance()
+                        if self.match(TokenType.FUNCTION):
+                            self.pos = saved_pos
+                            functions.append(self.parse_function())
+                        else:
+                            self.pos = saved_pos
+                            break
+                    elif self.match(TokenType.FUNCTION):
+                        functions.append(self.parse_function())
+                    else:
+                        break
+                return Program(name="", declarations=declarations, statements=[],
+                              statement_functions=[], subroutines=subroutines, functions=functions)
+        
         statements = []
+        statement_functions = []
         while not self.match(TokenType.END, TokenType.EOF):
             self.skip_comments()
             if self.match(TokenType.END, TokenType.EOF):
                 break
+            if self.match(TokenType.INTEGER, TokenType.REAL, TokenType.LOGICAL, TokenType.COMPLEX, TokenType.CHARACTER,
+                         TokenType.DIMENSION, TokenType.PARAMETER):
+                break
             stmt = self.parse_statement()
-            statements.append(stmt)
+            if stmt:
+                statements.append(stmt)
         self.expect(TokenType.END)
-        return Program(name=name, declarations=declarations, statements=statements)
+        
+        subroutines = []
+        functions = []
+        while not self.match(TokenType.EOF):
+            self.skip_comments()
+            if self.match(TokenType.EOF):
+                break
+            if self.match(TokenType.SUBROUTINE):
+                subroutines.append(self.parse_subroutine())
+            elif self.match(TokenType.INTEGER, TokenType.REAL, TokenType.LOGICAL):
+                saved_pos = self.pos
+                self.advance()
+                if self.match(TokenType.FUNCTION):
+                    self.pos = saved_pos
+                    functions.append(self.parse_function())
+                else:
+                    self.pos = saved_pos
+                    break
+            elif self.match(TokenType.FUNCTION):
+                functions.append(self.parse_function())
+            else:
+                break
+        
+        return Program(name=name, declarations=declarations, statements=statements,
+                      statement_functions=statement_functions, subroutines=subroutines, functions=functions)
 
     def parse_declaration(self) -> List[Declaration]:
         decls = []
@@ -1472,6 +1591,11 @@ class Parser:
         elif self.match(TokenType.DATA):
             data_stmt = self.parse_data_statement()
             return data_stmt
+        elif self.match(TokenType.CALL):
+            return self.parse_call_statement()
+        elif self.match(TokenType.RETURN):
+            self.advance()
+            return ReturnStatement()
         elif self.match(TokenType.IDENTIFIER):
             return self.parse_assignment_or_label()
         elif self.match(TokenType.END, TokenType.ENDIF, TokenType.ENDDO, TokenType.ELSE, TokenType.ELSEIF):
@@ -1556,7 +1680,11 @@ class Parser:
                     self.advance()
                 else:
                     self.advance()
+                    if not self.match(TokenType.IF):
+                        break
                     self.expect(TokenType.IF)
+                if not self.match(TokenType.LPAREN):
+                    break
                 self.expect(TokenType.LPAREN)
                 elif_cond = self.parse_expression()
                 self.expect(TokenType.RPAREN)
@@ -1565,7 +1693,9 @@ class Parser:
                 while not self.is_if_terminator():
                     stmt = self.parse_statement()
                     if stmt is None:
-                        break
+                        if self.is_if_terminator():
+                            break
+                        continue
                     elif_body.append(stmt)
                 elif_parts.append((elif_cond, elif_body))
             else_body = None
@@ -1576,7 +1706,9 @@ class Parser:
                     while not self.is_if_terminator():
                         stmt = self.parse_statement()
                         if stmt is None:
-                            break
+                            if self.is_if_terminator():
+                                break
+                            continue
                         else_body.append(stmt)
                 else:
                     while self.match(TokenType.ELSEIF) or self.is_else_if():
@@ -1584,14 +1716,23 @@ class Parser:
                             self.advance()
                         else:
                             self.advance()
+                            if not self.match(TokenType.IF):
+                                break
                             self.expect(TokenType.IF)
+                        if not self.match(TokenType.LPAREN):
+                            break
                         self.expect(TokenType.LPAREN)
                         elif_cond = self.parse_expression()
                         self.expect(TokenType.RPAREN)
                         self.expect(TokenType.THEN)
                         elif_body = []
                         while not self.is_if_terminator():
-                            elif_body.append(self.parse_statement())
+                            stmt = self.parse_statement()
+                            if stmt is None:
+                                if self.is_if_terminator():
+                                    break
+                                continue
+                            elif_body.append(stmt)
                         elif_parts.append((elif_cond, elif_body))
                     if self.match(TokenType.ELSE):
                         self.advance()
@@ -1805,6 +1946,119 @@ class Parser:
         label_token = self.expect(TokenType.INTEGER_LIT)
         return GotoStatement(label=str(label_token.value))
 
+    def parse_call_statement(self) -> CallStatement:
+        """Парсит CALL subroutine_name(arg1, arg2, ...)"""
+        self.expect(TokenType.CALL)
+        name_token = self.expect(TokenType.IDENTIFIER)
+        name = name_token.value
+        args = []
+        if self.match(TokenType.LPAREN):
+            self.advance()
+            if not self.match(TokenType.RPAREN):
+                while True:
+                    args.append(self.parse_expression())
+                    if not self.match(TokenType.COMMA):
+                        break
+                    self.advance()
+            self.expect(TokenType.RPAREN)
+        return CallStatement(name=name, args=args)
+
+    def parse_subroutine(self) -> Subroutine:
+        """Парсит SUBROUTINE name(param1, param2, ...) ... END"""
+        self.expect(TokenType.SUBROUTINE)
+        name_token = self.expect(TokenType.IDENTIFIER)
+        name = name_token.value
+        params = []
+        if self.match(TokenType.LPAREN):
+            self.advance()
+            if not self.match(TokenType.RPAREN):
+                while True:
+                    param_token = self.expect(TokenType.IDENTIFIER)
+                    params.append(param_token.value)
+                    if not self.match(TokenType.COMMA):
+                        break
+                    self.advance()
+            self.expect(TokenType.RPAREN)
+        
+        declarations = []
+        self.skip_comments()
+        while self.match(TokenType.IMPLICIT):
+            declarations.append(self.parse_implicit_statement())
+        while self.match(TokenType.INTEGER, TokenType.REAL, TokenType.LOGICAL, TokenType.COMPLEX, TokenType.CHARACTER,
+                         TokenType.DIMENSION, TokenType.PARAMETER, TokenType.DATA):
+            if self.match(TokenType.DIMENSION):
+                declarations.append(self.parse_dimension_statement())
+            elif self.match(TokenType.PARAMETER):
+                declarations.append(self.parse_parameter_statement())
+            elif self.match(TokenType.DATA):
+                declarations.append(self.parse_data_statement())
+            else:
+                declarations.extend(self.parse_declaration())
+            self.skip_comments()
+        
+        statements = []
+        while not self.match(TokenType.END, TokenType.EOF):
+            self.skip_comments()
+            if self.match(TokenType.END, TokenType.EOF):
+                break
+            stmt = self.parse_statement()
+            if stmt:
+                statements.append(stmt)
+        self.expect(TokenType.END)
+        
+        return Subroutine(name=name, params=params, declarations=declarations, statements=statements)
+
+    def parse_function(self) -> FunctionDef:
+        """Парсит [type] FUNCTION name(param1, param2, ...) ... END"""
+        return_type = None
+        if self.match(TokenType.INTEGER, TokenType.REAL, TokenType.LOGICAL):
+            type_token = self.advance()
+            return_type = type_token.value.upper()
+        
+        self.expect(TokenType.FUNCTION)
+        name_token = self.expect(TokenType.IDENTIFIER)
+        name = name_token.value
+        params = []
+        if self.match(TokenType.LPAREN):
+            self.advance()
+            if not self.match(TokenType.RPAREN):
+                while True:
+                    param_token = self.expect(TokenType.IDENTIFIER)
+                    params.append(param_token.value)
+                    if not self.match(TokenType.COMMA):
+                        break
+                    self.advance()
+            self.expect(TokenType.RPAREN)
+        
+        declarations = []
+        self.skip_comments()
+        while self.match(TokenType.IMPLICIT):
+            declarations.append(self.parse_implicit_statement())
+        while self.match(TokenType.INTEGER, TokenType.REAL, TokenType.LOGICAL, TokenType.COMPLEX, TokenType.CHARACTER,
+                         TokenType.DIMENSION, TokenType.PARAMETER, TokenType.DATA):
+            if self.match(TokenType.DIMENSION):
+                declarations.append(self.parse_dimension_statement())
+            elif self.match(TokenType.PARAMETER):
+                declarations.append(self.parse_parameter_statement())
+            elif self.match(TokenType.DATA):
+                declarations.append(self.parse_data_statement())
+            else:
+                declarations.extend(self.parse_declaration())
+            self.skip_comments()
+        
+        statements = []
+        while not self.match(TokenType.END, TokenType.EOF):
+            self.skip_comments()
+            if self.match(TokenType.END, TokenType.EOF):
+                break
+            stmt = self.parse_statement()
+            if stmt:
+                statements.append(stmt)
+        self.expect(TokenType.END)
+        
+        return FunctionDef(name=name, params=params, return_type=return_type,
+                          declarations=declarations, statements=statements)
+
     def parse_expression(self) -> Expression:
         return self.parse_eqv_expression()
 
@@ -1919,6 +2173,17 @@ class Parser:
     def parse_primary_expression(self) -> Expression:
         if self.match(TokenType.LPAREN):
             self.advance()
+            if self.match(TokenType.REAL_LIT, TokenType.INTEGER_LIT):
+                first_token = self.advance()
+                if self.match(TokenType.COMMA):
+                    self.advance()
+                    if self.match(TokenType.REAL_LIT, TokenType.INTEGER_LIT):
+                        second_token = self.advance()
+                        if self.match(TokenType.RPAREN):
+                            self.advance()
+                            real_part = float(first_token.value)
+                            imag_part = float(second_token.value)
+                            return ComplexLiteral(real_part=real_part, imag_part=imag_part, line=first_token.line, col=first_token.col)
             expr = self.parse_expression()
             self.expect(TokenType.RPAREN)
             return expr
@@ -1941,7 +2206,7 @@ class Parser:
                         TokenType.ASIN, TokenType.ACOS, TokenType.ATAN,
                         TokenType.ABS, TokenType.SQRT, TokenType.EXP,
                         TokenType.LOG, TokenType.LOG10,
-                        TokenType.MIN, TokenType.MAX, TokenType.MOD,
+                        TokenType.MIN, TokenType.MAX, TokenType.MOD, TokenType.POW,
                         TokenType.REAL_FUNC, TokenType.FLOAT):
             func_token = self.advance()
             self.expect(TokenType.LPAREN)
@@ -2038,12 +2303,14 @@ def pretty_print_ast(node: ASTNode, indent: int = 0) -> str:
         result = f"{prefix}DECLARATION: {node.type}"
         names_parts = []
         for name, dim_ranges in node.names:
-            if dim_ranges:
-                def format_dim(dim_range: Tuple[int, int]) -> str:
-                    k, l = dim_range
-                    if k == 1:
-                        return str(l)
-                    return f"{k}:{l}"
+            if dim_ranges and isinstance(dim_ranges, list):
+                def format_dim(dim_range) -> str:
+                    if isinstance(dim_range, tuple) and len(dim_range) == 2:
+                        k, l = dim_range
+                        if k == 1:
+                            return str(l)
+                        return f"{k}:{l}"
+                    return str(dim_range)
                 dims_str = "(" + ", ".join(format_dim(d)
                                            for d in dim_ranges) + ")"
                 names_parts.append(f"{name}{dims_str}")

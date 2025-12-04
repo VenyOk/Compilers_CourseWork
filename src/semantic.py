@@ -7,7 +7,9 @@ from src.core import (
     CallStatement, BinaryOp, UnaryOp, Variable, IntegerLiteral,
     RealLiteral, StringLiteral, LogicalLiteral, FunctionCall, Expression,
     DoWhile, LabeledDoWhile, ArrayRef, DimensionStatement, ParameterStatement,
-    DataStatement, DataItem, ArithmeticIfStatement, ImplicitNone, ImplicitStatement, ImplicitRule
+    DataStatement, DataItem, ArithmeticIfStatement, ImplicitNone, ImplicitStatement, ImplicitRule,
+    Subroutine, FunctionDef, ReturnStatement, ExternalStatement, CommonStatement,
+    GotoStatement, ContinueStatement, StopStatement
 )
 
 
@@ -66,6 +68,7 @@ class SemanticAnalyzer:
             "MOD": (None, []),
             "MIN": (None, []),
             "MAX": (None, []),
+            "POW": (TypeKind.REAL, [TypeKind.REAL, TypeKind.INTEGER]),
         }
 
     def _format_error(self, message: str, node: Optional[ASTNode] = None,
@@ -100,6 +103,13 @@ class SemanticAnalyzer:
         try:
             self._analyze_declarations(ast.declarations)
             self._analyze_statements(ast.statements)
+            
+            for sub in ast.subroutines:
+                self._analyze_subroutine(sub)
+            
+            for func in ast.functions:
+                self._analyze_function(func)
+            
             return len(self.errors) == 0
         except Exception as e:
             import traceback
@@ -155,6 +165,12 @@ class SemanticAnalyzer:
                             continue
                         if var_info.is_array:
                             var_info.type_kind = type_kind
+                            continue
+                        if not var_info.is_parameter and not var_info.is_array:
+                            var_info.type_kind = type_kind
+                            if dims is not None:
+                                var_info.is_array = True
+                                var_info.dimensions = dims
                             continue
                         error_msg = self._format_error(
                             f"Переменная '{name}' уже объявлена как {existing_type}",
@@ -1175,3 +1191,130 @@ class SemanticAnalyzer:
                             context=f"{value_type.value} -> {var_info.type_kind.value}"
                         )
                         self.warnings.append(warning_msg)
+
+    def _analyze_subroutine(self, sub: 'Subroutine'):
+        """Анализирует подпрограмму SUBROUTINE"""
+        old_symbol_table = self.symbol_table.copy()
+        
+        for param in sub.params:
+            param_upper = param.upper()
+            type_kind, type_size = self._get_implicit_type(param_upper)
+            var_info = VariableInfo(
+                name=param_upper,
+                type_kind=type_kind,
+                is_array=False,
+                dimensions=[],
+                is_parameter=False
+            )
+            self.symbol_table[param_upper] = var_info
+        
+        self._analyze_declarations(sub.declarations)
+        
+        self._analyze_statements(sub.statements)
+        
+        has_return = any(isinstance(s, ReturnStatement) for s in sub.statements)
+        if not has_return:
+            warning_msg = self._format_warning(
+                f"Подпрограмма '{sub.name}' не содержит оператора RETURN",
+                context="SUBROUTINE"
+            )
+            self.warnings.append(warning_msg)
+        
+        self.symbol_table = old_symbol_table
+
+    def _analyze_function(self, func: 'FunctionDef'):
+        """Анализирует функцию FUNCTION"""
+        old_symbol_table = self.symbol_table.copy()
+        
+        return_type = TypeKind.REAL
+        if func.return_type:
+            type_map = {
+                'INTEGER': TypeKind.INTEGER,
+                'REAL': TypeKind.REAL,
+                'LOGICAL': TypeKind.LOGICAL,
+                'COMPLEX': TypeKind.COMPLEX,
+                'CHARACTER': TypeKind.CHARACTER
+            }
+            return_type = type_map.get(func.return_type.upper(), TypeKind.REAL)
+        
+        func_name_upper = func.name.upper()
+        var_info = VariableInfo(
+            name=func_name_upper,
+            type_kind=return_type,
+            is_array=False,
+            dimensions=[],
+            is_parameter=False
+        )
+        self.symbol_table[func_name_upper] = var_info
+        
+        for param in func.params:
+            param_upper = param.upper()
+            type_kind, type_size = self._get_implicit_type(param_upper)
+            param_info = VariableInfo(
+                name=param_upper,
+                type_kind=type_kind,
+                is_array=False,
+                dimensions=[],
+                is_parameter=False
+            )
+            self.symbol_table[param_upper] = param_info
+        
+        self._analyze_declarations(func.declarations)
+        
+        self._analyze_statements(func.statements)
+        
+        has_return = any(isinstance(s, ReturnStatement) for s in func.statements)
+        if not has_return:
+            error_msg = self._format_error(
+                f"Функция '{func.name}' должна содержать хотя бы один оператор RETURN",
+                context="FUNCTION",
+                suggestion="Добавьте оператор RETURN перед END"
+            )
+            self.errors.append(error_msg)
+        
+        self.symbol_table = old_symbol_table
+
+    def _analyze_external_statement(self, stmt: 'ExternalStatement'):
+        """Анализирует оператор EXTERNAL"""
+        for name in stmt.names:
+            name_upper = name.upper()
+            if name_upper in self.symbol_table:
+                warning_msg = self._format_warning(
+                    f"Имя '{name}' в EXTERNAL уже объявлено как переменная",
+                    node=stmt,
+                    context="EXTERNAL должен объявлять только подпрограммы"
+                )
+                self.warnings.append(warning_msg)
+
+    def _analyze_common_statement(self, stmt: 'CommonStatement'):
+        """Анализирует оператор COMMON"""
+        for block_name, variables in stmt.blocks:
+            for var in variables:
+                var_name = var.name if hasattr(var, 'name') else str(var)
+                var_upper = var_name.upper()
+                if var_upper not in self.symbol_table:
+                    type_kind, type_size = self._get_implicit_type(var_upper)
+                    var_info = VariableInfo(
+                        name=var_upper,
+                        type_kind=type_kind,
+                        is_array=False,
+                        dimensions=[],
+                        is_parameter=False
+                    )
+                    self.symbol_table[var_upper] = var_info
+
+    def _analyze_goto_statement(self, stmt: 'GotoStatement'):
+        """Анализирует оператор GOTO"""
+        pass
+
+    def _analyze_continue_statement(self, stmt: 'ContinueStatement'):
+        """Анализирует оператор CONTINUE"""
+        pass
+
+    def _analyze_return_statement(self, stmt: 'ReturnStatement'):
+        """Анализирует оператор RETURN"""
+        pass
+
+    def _analyze_stop_statement(self, stmt: 'StopStatement'):
+        """Анализирует оператор STOP"""
+        pass

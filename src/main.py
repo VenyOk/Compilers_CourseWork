@@ -6,7 +6,7 @@ from src.ssa_generator import SSAGenerator
 from src.llvm_generator import LLVMGenerator
 
 
-def analyze_file(file_path: str, ssa_output: str = None, llvm_output: str = None) -> int:
+def analyze_file(file_path: str, ssa_output: str = None, llvm_output: str = None, show_ast: bool = False) -> int:
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             code = f.read()
@@ -29,10 +29,11 @@ def analyze_file(file_path: str, ssa_output: str = None, llvm_output: str = None
             print()
         parser = Parser(tokens)
         ast = parser.parse()
-        print("AST:")
-        print("=" * 80)
-        print(pretty_print_ast(ast))
-        print()
+        if show_ast:
+            print("AST:")
+            print("=" * 80)
+            print(pretty_print_ast(ast))
+            print()
         print("Семантический анализ:")
         print("=" * 80)
         semantic = SemanticAnalyzer()
@@ -50,8 +51,7 @@ def analyze_file(file_path: str, ssa_output: str = None, llvm_output: str = None
                 print(f"  {i}. {warning}")
             print()
         if success and not warnings:
-            print(
-                "[OK] Семантический анализ завершен успешно, ошибок и предупреждений нет.")
+            print("[OK] Семантический анализ завершен успешно, ошибок и предупреждений нет.")
         elif success:
             print("[OK] Семантический анализ завершен успешно, но есть предупреждения.")
         else:
@@ -115,11 +115,17 @@ def main():
         dest='llvm_output',
         help='Путь к выходному файлу для LLVM IR (.ll)'
     )
+    parser.add_argument(
+        '-a', '--ast',
+        dest='show_ast',
+        action='store_true',
+        help='Выводить AST дерево'
+    )
     args = parser.parse_args()
     if not args.file.endswith('.f'):
         print(
             f"Предупреждение: файл '{args.file}' не имеет расширения .f", file=sys.stderr)
-    return analyze_file(args.file, args.ssa_output, args.llvm_output)
+    return analyze_file(args.file, args.ssa_output, args.llvm_output, args.show_ast)
 
 
 if __name__ == '__main__':

@@ -1,36 +1,4 @@
-Лексическая структура:
-
-<letter>            ::= 'A' | 'B' | ... | 'Z' | 'a' | 'b' | ... | 'z'
-<digit>             ::= '0' | '1' | '2' | ... | '9'
-<whitespace>        ::= ' ' | '\t' | '\f' | '\r'
-<newline>           ::= '\n'
-
-Формат строки Fortran:
-- Строка максимум 80 символов
-- Метки в позициях 1-5
-- Операторы в позициях 7-72
-- Позиция 6 пустая или содержит символ продолжения строки
-
-Комментарии:
-<comment>           ::= '!' <any-chars-except-newline> <newline>
-                      | 'C' <any-chars> <newline>  (если 'C' в позиции 1)
-
-Литералы:
-<integer>           ::= <digit>+
-<real>              ::= <digit>* '.' <digit>+ [<exponent>]
-                      | <digit>+ '.' [<exponent>]
-                      | <digit>+ <exponent>
-<exponent>          ::= ('E' | 'D') ['+' | '-'] <digit>+
-<string>            ::= '\'' <chars> '\''
-                      | '"' <chars> '"'
-<logical-const>     ::= '.TRUE.' | '.FALSE.'
-
-Идентификаторы:
-<identifier>        ::= <letter> [(<letter> | <digit> | '_')]*
-Длина: 1-6 символов
-Первый символ: буква
-
-Ключевые слова (регистронезависимые):
+Ключевые слова:
 PROGRAM, END, IMPLICIT, NONE
 INTEGER, REAL, COMPLEX, LOGICAL, CHARACTER
 DIMENSION, PARAMETER, DATA
@@ -80,8 +48,7 @@ TRUE, FALSE
 
 <implicit-stmts>    ::= <implicit-stmt>*
 
-<implicit-stmt>     ::= 'IMPLICIT' 'NONE'
-                      | 'IMPLICIT' <implicit-rule> (',' <implicit-rule>)*
+<implicit-stmt>     ::= 'IMPLICIT' <implicit-rule> (',' <implicit-rule>)*
 
 <implicit-rule>     ::= <type-spec> '(' <letter-spec> (',' <letter-spec>)* ')'
 
@@ -219,3 +186,21 @@ TRUE, FALSE
 <goto-stmt>         ::= 'GOTO' <integer>
 
 <stop-stmt>         ::= 'STOP'
+
+<identifier>        ::= <letter> [(<letter> | <digit>)]*
+
+<integer>           ::= <digit>+
+<real>              ::= <digit>* '.' <digit>+ [<exponent>]
+                      | <digit>+ '.' [<exponent>]
+                      | <digit>+ <exponent>
+<exponent>          ::= ('E' | 'D') ['+' | '-'] <digit>+
+<string>            ::= '\'' <chars> '\''
+                      | '"' <chars> '"'
+<logical-const>     ::= '.TRUE.' | '.FALSE.'
+
+<letter>            ::= 'A' | 'B' | ... | 'Z' | 'a' | 'b' | ... | 'z'
+<digit>             ::= '0' | '1' | '2' | ... | '9'
+<whitespace>        ::= ' ' | '\t' | '\f' | '\r'
+<newline>           ::= '\n'
+<comment>           ::= '!' <any-chars-except-newline> <newline>
+                      | 'C' <any-chars> <newline>
