@@ -55,6 +55,10 @@ class LLVMGenerator:
         # Для отслеживания phi-функций
         self.var_ssa_versions: Dict[str, str] = {}  # Имя переменной -> текущая SSA версия
         self.phi_tracking: List[Dict[str, str]] = []  # Стек для отслеживания переменных в ветках
+        self.last_block_before_endif: Dict[str, str] = {}  # if_id -> последний блок перед endif
+        self.array_dimensions: Dict[str, List[int]] = {}  # Имя массива -> размеры [N, M, ...]
+        self.last_block_label: str = ""  # Последний сгенерированный блок
+        self.current_subroutine_params: List[str] = []  # Параметры текущей подпрограммы
 
     def generate(self, ast: Program) -> str:
         self.code_lines = []
@@ -67,6 +71,8 @@ class LLVMGenerator:
         self.char_lengths = {}
         self.var_ssa_versions = {}
         self.phi_tracking = []
+        self.array_dimensions = {}
+        self.current_subroutine_params = []
         
         for stmt_func in ast.statement_functions:
             if hasattr(stmt_func, 'name') and stmt_func.name:
@@ -240,14 +246,20 @@ class LLVMGenerator:
                         continue
                     elif dims:
                         size = 1
+                        dim_sizes = []
                         for d in dims:
                             if isinstance(d, tuple):
                                 start, end = d
-                                size *= (end - start + 1)
+                                dim_size = (end - start + 1)
+                                size *= dim_size
+                                dim_sizes.append(dim_size)
                             else:
                                 size *= d
+                                dim_sizes.append(d)
                         alloc_type = f"[{size} x {llvm_type}]"
                         local_name = f"%{name}"
+                        # Сохраняем размеры для всех массивов (не только параметров)
+                        self.array_dimensions[name.upper()] = dim_sizes
                     else:
                         alloc_type = llvm_type
                         local_name = f"%{name}"
@@ -294,17 +306,91 @@ class LLVMGenerator:
                 idx)[0] for idx in stmt.indices]
             if stmt.target in self.var_alloc:
                 alloc_type, ptr_name = self.var_alloc[stmt.target]
-                base_type = self.type_map.get('REAL', 'double')
-                if '[' in alloc_type:
-                    idx = indices_vals[0]
-                    adjusted_idx = self._new_local()
+                base_type = alloc_type if '[' not in alloc_type else alloc_type.split(
+                    '[')[1].split(']')[0].split(' x ')[1]
+                
+                # Если это указатель (параметр подпрограммы)
+                if '[' not in alloc_type:
+                    # Параметр-массив передается как указатель
+                    if len(indices_vals) == 1:
+                        adjusted_idx = self._new_local()
+                        self.code_lines.append(
+                            f"  {adjusted_idx} = sub i32 {indices_vals[0]}, 1")
+                        elem_ptr = self._new_local()
+                        self.code_lines.append(
+                            f"  {elem_ptr} = getelementptr inbounds {base_type}, "
+                            f"{base_type}* {ptr_name}, i32 {adjusted_idx}"
+                        )
+                    else:
+                        # Многомерный массив: вычисляем линейный индекс
+                        # Используем сохраненные размеры массива
+                        array_dims = self.array_dimensions.get(stmt.target.upper(), [8, 8])  # По умолчанию 8x8
+                        if len(array_dims) >= 2:
+                            second_dim = array_dims[1]  # Размер второй размерности
+                        else:
+                            second_dim = 8  # По умолчанию
+                        
+                        i_adjusted = self._new_local()
+                        self.code_lines.append(
+                            f"  {i_adjusted} = sub i32 {indices_vals[0]}, 1")
+                        j_adjusted = self._new_local()
+                        self.code_lines.append(
+                            f"  {j_adjusted} = sub i32 {indices_vals[1]}, 1")
+                        i_mul = self._new_local()
+                        self.code_lines.append(
+                            f"  {i_mul} = mul i32 {i_adjusted}, {second_dim}")
+                        linear_idx = self._new_local()
+                        self.code_lines.append(
+                            f"  {linear_idx} = add i32 {i_mul}, {j_adjusted}")
+                        elem_ptr = self._new_local()
+                        self.code_lines.append(
+                            f"  {elem_ptr} = getelementptr inbounds {base_type}, "
+                            f"{base_type}* {ptr_name}, i32 {linear_idx}"
+                        )
                     self.code_lines.append(
-                        f"  {adjusted_idx} = sub i32 {idx}, 1")
-                    elem_ptr = self._new_local()
-                    self.code_lines.append(
-                        f"  {elem_ptr} = getelementptr inbounds {alloc_type}, "
-                        f"{alloc_type}* {ptr_name}, i64 0, i32 {adjusted_idx}"
-                    )
+                        f"  store {rhs_type} {rhs_val}, {rhs_type}* {elem_ptr}")
+                elif '[' in alloc_type:
+                    # Многомерный массив в основной программе
+                    if len(indices_vals) > 1:
+                        # Вычисляем линейный индекс для многомерного массива
+                        array_dims = self.array_dimensions.get(stmt.target.upper(), [])
+                        if len(array_dims) >= 2:
+                            second_dim = array_dims[1]
+                        else:
+                            # Если размеры не найдены, пытаемся вычислить из alloc_type
+                            # alloc_type = "[4 x i32]" для массива 2x2
+                            total_size = int(alloc_type.split('[')[1].split(']')[0].split(' x ')[0])
+                            # Предполагаем квадратную матрицу
+                            second_dim = int(total_size ** 0.5) if total_size > 0 else 8
+                        
+                        i_adjusted = self._new_local()
+                        self.code_lines.append(
+                            f"  {i_adjusted} = sub i32 {indices_vals[0]}, 1")
+                        j_adjusted = self._new_local()
+                        self.code_lines.append(
+                            f"  {j_adjusted} = sub i32 {indices_vals[1]}, 1")
+                        i_mul = self._new_local()
+                        self.code_lines.append(
+                            f"  {i_mul} = mul i32 {i_adjusted}, {second_dim}")
+                        linear_idx = self._new_local()
+                        self.code_lines.append(
+                            f"  {linear_idx} = add i32 {i_mul}, {j_adjusted}")
+                        elem_ptr = self._new_local()
+                        self.code_lines.append(
+                            f"  {elem_ptr} = getelementptr inbounds {alloc_type}, "
+                            f"{alloc_type}* {ptr_name}, i64 0, i32 {linear_idx}"
+                        )
+                    else:
+                        # Одномерный массив
+                        idx = indices_vals[0]
+                        adjusted_idx = self._new_local()
+                        self.code_lines.append(
+                            f"  {adjusted_idx} = sub i32 {idx}, 1")
+                        elem_ptr = self._new_local()
+                        self.code_lines.append(
+                            f"  {elem_ptr} = getelementptr inbounds {alloc_type}, "
+                            f"{alloc_type}* {ptr_name}, i64 0, i32 {adjusted_idx}"
+                        )
                     self.code_lines.append(
                         f"  store {rhs_type} {rhs_val}, {rhs_type}* {elem_ptr}")
         else:
@@ -394,6 +480,10 @@ class LLVMGenerator:
                 f"  store {base_type} {next_val}, {base_type}* {ptr}")
         self.code_lines.append(f"  br label %{loop_label}")
         self.code_lines.append(f"{loop_end_label}:")
+        # Отслеживаем последний блок для PHI-узлов в if-операторах
+        # Обновляем все активные if-операторы, которые могут использовать этот блок
+        for if_id_key in list(self.last_block_before_endif.keys()):
+            self.last_block_before_endif[if_id_key] = loop_end_label
 
     def _emit_do_while(self, stmt: DoWhile):
         loop_id = self._new_block_id()
@@ -415,11 +505,17 @@ class LLVMGenerator:
             self._emit_statement(body_stmt)
         self.code_lines.append(f"  br label %{loop_label}")
         self.code_lines.append(f"{loop_end_label}:")
+        # Отслеживаем последний блок для PHI-узлов в if-операторах
+        # Обновляем все активные if-операторы, которые могут использовать этот блок
+        for if_id_key in list(self.last_block_before_endif.keys()):
+            self.last_block_before_endif[if_id_key] = loop_end_label
 
     def _emit_if_statement(self, stmt: IfStatement):
         if_id = self._new_block_id()
         then_label = f"if_then_{if_id}"
         endif_label = f"if_end_{if_id}"
+        # Инициализируем отслеживание последнего блока для этого if
+        self.last_block_before_endif[str(if_id)] = then_label
         cond_val, cond_type = self._emit_expression(stmt.condition)
         if cond_type != "i1":
             cond_bool = self._new_local()
@@ -479,13 +575,19 @@ class LLVMGenerator:
                 self.code_lines.append(f"  br label %{endif_label}")
             
             else_phi_vars = {}
+            else_end_block = else_label
             if stmt.else_body:
                 self.code_lines.append(f"{else_label}:")
                 self.phi_tracking[-1] = {}
                 for s in stmt.else_body:
                     self._emit_statement(s)
                 else_phi_vars = self.phi_tracking[-1].copy()
+                # Если был установлен последний блок (например, из цикла), используем его
+                if str(if_id) in self.last_block_before_endif:
+                    else_end_block = self.last_block_before_endif[str(if_id)]
                 self.code_lines.append(f"  br label %{endif_label}")
+                # Сохраняем последний блок для PHI-узлов
+                self.last_block_before_endif[str(if_id)] = else_end_block
         else:
             else_label = f"if_else_{if_id}" if stmt.else_body else endif_label
             self.code_lines.append(
@@ -503,7 +605,12 @@ class LLVMGenerator:
                 for s in stmt.else_body:
                     self._emit_statement(s)
                 else_phi_vars = self.phi_tracking[-1].copy()
+                # Отслеживаем последний блок перед переходом в endif
+                # Если есть циклы, они уже установили last_block_label
+                actual_else_end = self.last_block_before_endif.get(str(if_id), else_label)
                 self.code_lines.append(f"  br label %{endif_label}")
+                # Сохраняем последний блок для PHI-узлов
+                self.last_block_before_endif[str(if_id)] = actual_else_end
         
         phi_instructions = []
         all_modified_vars = set(then_phi_vars.keys())
@@ -533,10 +640,12 @@ class LLVMGenerator:
                     phi_args.append(f"[{before_phi_vars[var_name]}, %{elif_label}]")
             
             if stmt.else_body:
+                # Используем фактический последний блок из else ветки
+                actual_else_label = self.last_block_before_endif.get(str(if_id), else_label)
                 if var_name in else_phi_vars:
-                    phi_args.append(f"[{else_phi_vars[var_name]}, %{else_label}]")
+                    phi_args.append(f"[{else_phi_vars[var_name]}, %{actual_else_label}]")
                 else:
-                    phi_args.append(f"[{before_phi_vars[var_name]}, %{else_label}]")
+                    phi_args.append(f"[{before_phi_vars[var_name]}, %{actual_else_label}]")
             
             if len(phi_args) > 1:
                 phi_result = self._new_local()
@@ -740,7 +849,17 @@ class LLVMGenerator:
                 if arg.name in self.var_alloc:
                     alloc_type, ptr_name = self.var_alloc[arg.name]
                     base_type = alloc_type if '[' not in alloc_type else alloc_type.split('[')[1].split(']')[0].split(' x ')[1]
-                    args.append(f"{base_type}* {ptr_name}")
+                    # Если это массив, нужно получить указатель на первый элемент
+                    if '[' in alloc_type:
+                        # Массив: получаем указатель на первый элемент через getelementptr
+                        array_ptr = self._new_local()
+                        self.code_lines.append(
+                            f"  {array_ptr} = getelementptr inbounds {alloc_type}, {alloc_type}* {ptr_name}, i64 0, i64 0"
+                        )
+                        args.append(f"{base_type}* {array_ptr}")
+                    else:
+                        # Уже указатель
+                        args.append(f"{base_type}* {ptr_name}")
                     arg_types.append(f"{base_type}*")
                 else:
                     val, val_type = self._emit_expression(arg)
@@ -802,23 +921,109 @@ class LLVMGenerator:
             return (f"@{expr.name}", "unknown")
         elif isinstance(expr, ArrayRef):
             array_name = expr.name
+            # Проверяем, не является ли это вызовом встроенной функции
+            builtin_functions = {"SIN", "COS", "TAN", "ASIN", "ACOS", "ATAN", 
+                                "EXP", "LOG", "LOG10", "SQRT", "ABS", "INT", "FLOAT", 
+                                "REAL", "MOD", "MIN", "MAX", "POW"}
+            if array_name.upper() in builtin_functions and len(expr.indices) == 0:
+                # Это вызов встроенной функции без аргументов
+                # Создаем временный FunctionCall и обрабатываем его
+                func_call = FunctionCall(name=array_name.upper(), args=[], line=expr.line, col=expr.col)
+                return self._emit_function_call(func_call)
+            
             indices = [self._emit_expression(idx)[0] for idx in expr.indices]
             if array_name in self.var_alloc:
                 alloc_type, ptr = self.var_alloc[array_name]
                 base_type = alloc_type if '[' not in alloc_type else alloc_type.split(
                     '[')[1].split(']')[0].split(' x ')[1]
-                adjusted_idx = self._new_local()
-                self.code_lines.append(
-                    f"  {adjusted_idx} = sub i32 {indices[0]}, 1")
-                elem_ptr = self._new_local()
-                self.code_lines.append(
-                    f"  {elem_ptr} = getelementptr inbounds {alloc_type}, "
-                    f"{alloc_type}* {ptr}, i64 0, i32 {adjusted_idx}"
-                )
-                loaded = self._new_local()
-                self.code_lines.append(
-                    f"  {loaded} = load {base_type}, {base_type}* {elem_ptr}")
-                return (loaded, base_type)
+                
+                # Если это указатель (параметр подпрограммы), используем простую индексацию
+                if '[' not in alloc_type:
+                    # Параметр-массив передается как указатель
+                    # Для многомерных массивов вычисляем линейный индекс
+                    if len(indices) == 1:
+                        adjusted_idx = self._new_local()
+                        self.code_lines.append(
+                            f"  {adjusted_idx} = sub i32 {indices[0]}, 1")
+                        elem_ptr = self._new_local()
+                        self.code_lines.append(
+                            f"  {elem_ptr} = getelementptr inbounds {base_type}, "
+                            f"{base_type}* {ptr}, i32 {adjusted_idx}"
+                        )
+                    else:
+                        # Многомерный массив: вычисляем линейный индекс
+                        # Для массива NxM: index = (i-1) * M + (j-1)
+                        # Используем сохраненные размеры массива
+                        array_dims = self.array_dimensions.get(array_name.upper(), [8, 8])  # По умолчанию 8x8
+                        if len(array_dims) >= 2:
+                            second_dim = array_dims[1]  # Размер второй размерности
+                        else:
+                            second_dim = 8  # По умолчанию
+                        
+                        i_adjusted = self._new_local()
+                        self.code_lines.append(
+                            f"  {i_adjusted} = sub i32 {indices[0]}, 1")
+                        j_adjusted = self._new_local()
+                        self.code_lines.append(
+                            f"  {j_adjusted} = sub i32 {indices[1]}, 1")
+                        i_mul = self._new_local()
+                        self.code_lines.append(
+                            f"  {i_mul} = mul i32 {i_adjusted}, {second_dim}")
+                        linear_idx = self._new_local()
+                        self.code_lines.append(
+                            f"  {linear_idx} = add i32 {i_mul}, {j_adjusted}")
+                        elem_ptr = self._new_local()
+                        self.code_lines.append(
+                            f"  {elem_ptr} = getelementptr inbounds {base_type}, "
+                            f"{base_type}* {ptr}, i32 {linear_idx}"
+                        )
+                    loaded = self._new_local()
+                    self.code_lines.append(
+                        f"  {loaded} = load {base_type}, {base_type}* {elem_ptr}")
+                    return (loaded, base_type)
+                else:
+                    # Обычный массив в основной программе
+                    if len(indices) > 1:
+                        # Многомерный массив: вычисляем линейный индекс
+                        array_dims = self.array_dimensions.get(array_name.upper(), [])
+                        if len(array_dims) >= 2:
+                            second_dim = array_dims[1]
+                        else:
+                            # Если размеры не найдены, пытаемся вычислить из alloc_type
+                            total_size = int(alloc_type.split('[')[1].split(']')[0].split(' x ')[0])
+                            second_dim = int(total_size ** 0.5) if total_size > 0 else 8
+                        
+                        i_adjusted = self._new_local()
+                        self.code_lines.append(
+                            f"  {i_adjusted} = sub i32 {indices[0]}, 1")
+                        j_adjusted = self._new_local()
+                        self.code_lines.append(
+                            f"  {j_adjusted} = sub i32 {indices[1]}, 1")
+                        i_mul = self._new_local()
+                        self.code_lines.append(
+                            f"  {i_mul} = mul i32 {i_adjusted}, {second_dim}")
+                        linear_idx = self._new_local()
+                        self.code_lines.append(
+                            f"  {linear_idx} = add i32 {i_mul}, {j_adjusted}")
+                        elem_ptr = self._new_local()
+                        self.code_lines.append(
+                            f"  {elem_ptr} = getelementptr inbounds {alloc_type}, "
+                            f"{alloc_type}* {ptr}, i64 0, i32 {linear_idx}"
+                        )
+                    else:
+                        # Одномерный массив
+                        adjusted_idx = self._new_local()
+                        self.code_lines.append(
+                            f"  {adjusted_idx} = sub i32 {indices[0]}, 1")
+                        elem_ptr = self._new_local()
+                        self.code_lines.append(
+                            f"  {elem_ptr} = getelementptr inbounds {alloc_type}, "
+                            f"{alloc_type}* {ptr}, i64 0, i32 {adjusted_idx}"
+                        )
+                    loaded = self._new_local()
+                    self.code_lines.append(
+                        f"  {loaded} = load {base_type}, {base_type}* {elem_ptr}")
+                    return (loaded, base_type)
             return ("0", "unknown")
         elif isinstance(expr, BinaryOp):
             return self._emit_binop(expr)
@@ -1140,7 +1345,6 @@ class LLVMGenerator:
         return self.block_counter
 
     def _emit_return_statement(self, stmt: ReturnStatement):
-        """Генерирует LLVM код для RETURN"""
         if self.current_function == "main":
             self.code_lines.append("  ret i32 0")
         else:
@@ -1154,19 +1358,16 @@ class LLVMGenerator:
                 self.code_lines.append("  ret void")
 
     def _emit_goto_statement(self, stmt: GotoStatement):
-        """Генерирует LLVM код для GOTO"""
         label_name = f"label_{stmt.label}"
         self.code_lines.append(f"  br label %{label_name}")
 
     def _emit_continue_statement(self, stmt: ContinueStatement):
-        """Генерирует LLVM код для CONTINUE"""
         if stmt.label:
             label_name = f"label_{stmt.label}"
             self.code_lines.append(f"  br label %{label_name}")
             self.code_lines.append(f"{label_name}:")
 
     def _emit_subroutine(self, sub: Subroutine):
-        """Генерирует LLVM код для SUBROUTINE"""
         old_function = self.current_function
         old_var_alloc = self.var_alloc.copy()
         old_local_counter = self.local_counter
@@ -1178,13 +1379,61 @@ class LLVMGenerator:
         self.block_counter = 0
         self.var_ssa_versions = {}
         self.phi_tracking = []
+        self.current_subroutine_params = sub.params  # Сохраняем параметры для использования в _emit_declarations
         
+        # Сначала обрабатываем объявления, чтобы определить типы параметров
+        temp_var_alloc = {}
+        temp_code_lines = []
+        old_code_lines = self.code_lines
+        self.code_lines = temp_code_lines
+        self.var_alloc = temp_var_alloc
+        
+        # Обрабатываем объявления для определения типов параметров
+        for decl in sub.declarations:
+            if isinstance(decl, Declaration):
+                llvm_type = self.type_map.get(decl.type, 'i32')
+                for name, dims in decl.names:
+                    param_upper = name.upper()
+                    if param_upper in [p.upper() for p in sub.params]:
+                        # Это параметр подпрограммы
+                        if dims:
+                            # Массив - передается как указатель
+                            temp_var_alloc[param_upper] = (llvm_type, f"%param_{name}")
+                            # Сохраняем размеры массива для правильной индексации
+                            dim_sizes = []
+                            for d in dims:
+                                if isinstance(d, tuple):
+                                    start, end = d
+                                    dim_size = (end - start + 1)
+                                    dim_sizes.append(dim_size)
+                                else:
+                                    dim_sizes.append(d)
+                            self.array_dimensions[param_upper] = dim_sizes
+                        else:
+                            # Скаляр - передается как указатель
+                            temp_var_alloc[param_upper] = (llvm_type, f"%param_{name}")
+        
+        # Восстанавливаем состояние
+        self.code_lines = old_code_lines
+        self.var_alloc = {}
+        
+        # Генерируем сигнатуру подпрограммы с правильными типами
         param_list = []
         param_types = {}
         for param in sub.params:
-            param_type = "i32"
+            param_upper = param.upper()
+            # Проверяем тип параметра из объявлений
+            param_type = "i32"  # По умолчанию
+            for decl in sub.declarations:
+                if isinstance(decl, Declaration):
+                    for name, dims in decl.names:
+                        if name.upper() == param_upper:
+                            param_type = self.type_map.get(decl.type, 'i32')
+                            break
+                    if param_type != "i32":
+                        break
             param_list.append(f"{param_type}* %param_{param}")
-            param_types[param.upper()] = param_type
+            param_types[param_upper] = param_type
         
         self.code_lines.append(f"; === Подпрограмма {sub.name} ===")
         self.code_lines.append(f"define void @{sub.name.upper()}({', '.join(param_list)}) #0 {{")
@@ -1210,9 +1459,9 @@ class LLVMGenerator:
         self.var_alloc = old_var_alloc
         self.local_counter = old_local_counter
         self.block_counter = old_block_counter
+        self.current_subroutine_params = []
 
     def _emit_function(self, func: FunctionDef):
-        """Генерирует LLVM код для FUNCTION"""
         old_function = self.current_function
         old_var_alloc = self.var_alloc.copy()
         old_local_counter = self.local_counter

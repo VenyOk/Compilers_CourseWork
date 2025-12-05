@@ -612,6 +612,12 @@ class SemanticAnalyzer:
                     self.errors.append(error_msg)
                     return TypeKind.UNKNOWN
         elif isinstance(expr, ArrayRef):
+            # Проверяем, не является ли это вызовом встроенной функции
+            if expr.name.upper() in self.builtin_functions and len(expr.indices) == 0:
+                # Это вызов встроенной функции без аргументов
+                ret_type, arg_types = self.builtin_functions[expr.name.upper()]
+                return ret_type if ret_type else TypeKind.UNKNOWN
+            
             if expr.name not in self.symbol_table:
                 error_msg = self._format_error(
                     f"Массив '{expr.name}' не объявлен",
