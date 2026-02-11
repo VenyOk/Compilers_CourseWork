@@ -5,4 +5,3 @@
       Y = 20
       WRITE(*,*) X, Y, X + Y
       END
-

@@ -9,4 +9,3 @@
       L3 = L1 .AND. .NOT. L2
       PRINT *, L3
       END
-

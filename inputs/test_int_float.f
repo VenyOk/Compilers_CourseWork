@@ -11,4 +11,3 @@
       PRINT *, A, B
       PRINT *, X, Y
       END
-

@@ -14,4 +14,3 @@
       PRINT *, A(1, 1, 1)
       PRINT *, A(2, 3, 2)
       END
-

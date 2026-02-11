@@ -101,15 +101,29 @@ class SemanticAnalyzer:
 
     def analyze(self, ast: Program) -> bool:
         try:
+            type_map = {
+                'INTEGER': TypeKind.INTEGER,
+                'REAL': TypeKind.REAL,
+                'LOGICAL': TypeKind.LOGICAL,
+                'COMPLEX': TypeKind.COMPLEX,
+                'CHARACTER': TypeKind.CHARACTER
+            }
+            for func in ast.functions:
+                fname = func.name.upper()
+                ret_type = TypeKind.INTEGER
+                if func.return_type:
+                    ret_type = type_map.get(func.return_type.upper(), TypeKind.INTEGER)
+                self.builtin_functions[fname] = (ret_type, None)
+
             self._analyze_declarations(ast.declarations)
             self._analyze_statements(ast.statements)
-            
+
             for sub in ast.subroutines:
                 self._analyze_subroutine(sub)
-            
+
             for func in ast.functions:
                 self._analyze_function(func)
-            
+
             return len(self.errors) == 0
         except Exception as e:
             import traceback
@@ -612,12 +626,11 @@ class SemanticAnalyzer:
                     self.errors.append(error_msg)
                     return TypeKind.UNKNOWN
         elif isinstance(expr, ArrayRef):
-            # Проверяем, не является ли это вызовом встроенной функции
-            if expr.name.upper() in self.builtin_functions and len(expr.indices) == 0:
-                # Это вызов встроенной функции без аргументов
+
+            if expr.name.upper() in self.builtin_functions:
                 ret_type, arg_types = self.builtin_functions[expr.name.upper()]
                 return ret_type if ret_type else TypeKind.UNKNOWN
-            
+
             if expr.name not in self.symbol_table:
                 error_msg = self._format_error(
                     f"Массив '{expr.name}' не объявлен",
@@ -712,17 +725,19 @@ class SemanticAnalyzer:
                 self.errors.append(error_msg)
             return TypeKind.LOGICAL
         if expr.op in {"+", "-", "*", "/", "**"}:
-            if left_type not in {TypeKind.INTEGER, TypeKind.REAL} or\
-               right_type not in {TypeKind.INTEGER, TypeKind.REAL}:
+            numeric_types = {TypeKind.INTEGER, TypeKind.REAL, TypeKind.COMPLEX}
+            if left_type not in numeric_types or right_type not in numeric_types:
                 if left_type != TypeKind.UNKNOWN and right_type != TypeKind.UNKNOWN:
                     error_msg = self._format_error(
                         f"Арифметическая операция '{expr.op}' требует числовых операндов",
                         node=expr,
                         context=f"получено {left_type.value} и {right_type.value}",
-                        suggestion="Используйте числовые выражения или переменные (INTEGER или REAL) для арифметических операций"
+                        suggestion="Используйте числовые выражения или переменные (INTEGER, REAL или COMPLEX) для арифметических операций"
                     )
                     self.errors.append(error_msg)
                 return TypeKind.UNKNOWN
+            if left_type == TypeKind.COMPLEX or right_type == TypeKind.COMPLEX:
+                return TypeKind.COMPLEX
             if left_type == TypeKind.INTEGER and right_type == TypeKind.INTEGER:
                 return TypeKind.INTEGER
             if left_type in {TypeKind.REAL, TypeKind.INTEGER} and\
@@ -1199,9 +1214,8 @@ class SemanticAnalyzer:
                         self.warnings.append(warning_msg)
 
     def _analyze_subroutine(self, sub: 'Subroutine'):
-        """Анализирует подпрограмму SUBROUTINE"""
         old_symbol_table = self.symbol_table.copy()
-        
+
         for param in sub.params:
             param_upper = param.upper()
             type_kind, type_size = self._get_implicit_type(param_upper)
@@ -1213,11 +1227,11 @@ class SemanticAnalyzer:
                 is_parameter=False
             )
             self.symbol_table[param_upper] = var_info
-        
+
         self._analyze_declarations(sub.declarations)
-        
+
         self._analyze_statements(sub.statements)
-        
+
         has_return = any(isinstance(s, ReturnStatement) for s in sub.statements)
         if not has_return:
             warning_msg = self._format_warning(
@@ -1225,13 +1239,12 @@ class SemanticAnalyzer:
                 context="SUBROUTINE"
             )
             self.warnings.append(warning_msg)
-        
+
         self.symbol_table = old_symbol_table
 
     def _analyze_function(self, func: 'FunctionDef'):
-        """Анализирует функцию FUNCTION"""
         old_symbol_table = self.symbol_table.copy()
-        
+
         return_type = TypeKind.REAL
         if func.return_type:
             type_map = {
@@ -1242,7 +1255,7 @@ class SemanticAnalyzer:
                 'CHARACTER': TypeKind.CHARACTER
             }
             return_type = type_map.get(func.return_type.upper(), TypeKind.REAL)
-        
+
         func_name_upper = func.name.upper()
         var_info = VariableInfo(
             name=func_name_upper,
@@ -1252,7 +1265,7 @@ class SemanticAnalyzer:
             is_parameter=False
         )
         self.symbol_table[func_name_upper] = var_info
-        
+
         for param in func.params:
             param_upper = param.upper()
             type_kind, type_size = self._get_implicit_type(param_upper)
@@ -1264,11 +1277,11 @@ class SemanticAnalyzer:
                 is_parameter=False
             )
             self.symbol_table[param_upper] = param_info
-        
+
         self._analyze_declarations(func.declarations)
-        
+
         self._analyze_statements(func.statements)
-        
+
         has_return = any(isinstance(s, ReturnStatement) for s in func.statements)
         if not has_return:
             error_msg = self._format_error(
@@ -1277,11 +1290,10 @@ class SemanticAnalyzer:
                 suggestion="Добавьте оператор RETURN перед END"
             )
             self.errors.append(error_msg)
-        
+
         self.symbol_table = old_symbol_table
 
     def _analyze_external_statement(self, stmt: 'ExternalStatement'):
-        """Анализирует оператор EXTERNAL"""
         for name in stmt.names:
             name_upper = name.upper()
             if name_upper in self.symbol_table:
@@ -1293,7 +1305,6 @@ class SemanticAnalyzer:
                 self.warnings.append(warning_msg)
 
     def _analyze_common_statement(self, stmt: 'CommonStatement'):
-        """Анализирует оператор COMMON"""
         for block_name, variables in stmt.blocks:
             for var in variables:
                 var_name = var.name if hasattr(var, 'name') else str(var)
@@ -1310,17 +1321,13 @@ class SemanticAnalyzer:
                     self.symbol_table[var_upper] = var_info
 
     def _analyze_goto_statement(self, stmt: 'GotoStatement'):
-        """Анализирует оператор GOTO"""
         pass
 
     def _analyze_continue_statement(self, stmt: 'ContinueStatement'):
-        """Анализирует оператор CONTINUE"""
         pass
 
     def _analyze_return_statement(self, stmt: 'ReturnStatement'):
-        """Анализирует оператор RETURN"""
         pass
 
     def _analyze_stop_statement(self, stmt: 'StopStatement'):
-        """Анализирует оператор STOP"""
         pass

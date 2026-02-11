@@ -6,4 +6,3 @@
       C = MOD(A, B)
       PRINT *, C
       END
-

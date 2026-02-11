@@ -7,4 +7,3 @@
       ENDDO
       PRINT *, SUM
       END
-

@@ -10,4 +10,3 @@
       PRINT *, A(5)
       PRINT *, B(1, 1)
       END
-

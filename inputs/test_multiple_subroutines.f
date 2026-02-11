@@ -23,4 +23,3 @@
       A = A * B
       B = TEMP * B
       END
-

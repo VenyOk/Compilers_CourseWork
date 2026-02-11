@@ -9,4 +9,3 @@
       IF (I .LE. 10) GOTO 10
       PRINT *, SUM
       END
-

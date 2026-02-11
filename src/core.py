@@ -15,6 +15,7 @@ class TokenType(Enum):
     INTEGER = auto()
     REAL = auto()
     COMPLEX = auto()
+    DOUBLEPRECISION = auto()
     LOGICAL = auto()
     CHARACTER = auto()
     DIMENSION = auto()
@@ -116,6 +117,7 @@ class Lexer:
             "INTEGER": TokenType.INTEGER,
             "REAL": TokenType.REAL,
             "COMPLEX": TokenType.COMPLEX,
+            "DOUBLEPRECISION": TokenType.DOUBLEPRECISION,
             "LOGICAL": TokenType.LOGICAL,
             "CHARACTER": TokenType.CHARACTER,
             "DIMENSION": TokenType.DIMENSION,
@@ -398,6 +400,20 @@ class Lexer:
         if not ident:
             return None
         upper_ident = ident.upper()
+        if upper_ident == "DOUBLE":
+            saved_pos2 = self.pos
+            saved_line2 = self.line
+            saved_col2 = self.col
+            while self.peek() and self.peek() in ' \t':
+                self.advance()
+            next_word = ""
+            while self.peek() and (self.peek().isalnum() or self.peek() == '_'):
+                next_word += self.advance()
+            if next_word.upper() == "PRECISION":
+                return Token(type=TokenType.DOUBLEPRECISION, value="DOUBLEPRECISION", line=start_line, col=start_col)
+            self.pos = saved_pos2
+            self.line = saved_line2
+            self.col = saved_col2
         if upper_ident in self.keywords:
             if ident and not ident[0].isalpha():
                 self.errors.append(
@@ -564,29 +580,7 @@ class Lexer:
         if ch.isalpha() or ch == '_':
             return self.read_identifier_or_keyword()
         if ch.isdigit():
-            saved_pos = self.pos
-            saved_line = self.line
-            saved_col = self.col
-            num_token = self.read_number()
-            self.skip_whitespace()
-            if self.peek() and (self.peek().isalnum() or self.peek() == '_'):
-                ident_start = self.pos
-                ident = ""
-                while self.peek() and (self.peek().isalnum() or self.peek() == '_'):
-                    ident += self.peek()
-                    self.advance()
-                if ident:
-                    self.errors.append(
-                        f"[строка {num_token.line}, колонка {num_token.col}] Имя переменной '{num_token.value}{ident}' не может начинаться с цифры. "
-                        f"В Fortran имена переменных должны начинаться с буквы. "
-                        f"Примеры правильных имен: A, X1, SUM. Примеры неправильных: 1A, 2X"
-                    )
-                    self.pos = ident_start
-                    self.line = saved_line
-                    self.col = saved_col
-            else:
-                self.pos = saved_pos + (self.pos - saved_pos)
-            return num_token
+            return self.read_number()
         if ch == '.':
             op_token = self.read_operator_or_delimiter()
             if op_token:
@@ -813,7 +807,7 @@ class ParameterStatement(ASTNode):
 
 @dataclass
 class Statement(ASTNode):
-    pass
+    stmt_label: Optional[str] = None
 
 
 @dataclass
@@ -1201,7 +1195,7 @@ class Parser:
             declarations.append(self.parse_implicit_statement())
             implicit_found = True
         while self.match(TokenType.INTEGER, TokenType.REAL, TokenType.LOGICAL, TokenType.COMPLEX, TokenType.CHARACTER,
-                         TokenType.DIMENSION, TokenType.PARAMETER, TokenType.DATA):
+                         TokenType.DOUBLEPRECISION, TokenType.DIMENSION, TokenType.PARAMETER, TokenType.DATA):
             other_declarations_found = True
             if self.match(TokenType.DIMENSION):
                 declarations.append(self.parse_dimension_statement())
@@ -1213,14 +1207,14 @@ class Parser:
                 declarations.extend(self.parse_declaration())
             self.skip_comments()
             if not self.match(TokenType.INTEGER, TokenType.REAL, TokenType.LOGICAL, TokenType.COMPLEX, TokenType.CHARACTER,
-                             TokenType.DIMENSION, TokenType.PARAMETER, TokenType.DATA):
+                             TokenType.DOUBLEPRECISION, TokenType.DIMENSION, TokenType.PARAMETER, TokenType.DATA):
                 break
-        
+
         if (not name or name == "MAIN"):
             next_token = self.current()
-            if (next_token.type == TokenType.SUBROUTINE or 
+            if (next_token.type == TokenType.SUBROUTINE or
                 next_token.type == TokenType.FUNCTION or
-                (next_token.type in (TokenType.INTEGER, TokenType.REAL, TokenType.LOGICAL) and 
+                (next_token.type in (TokenType.INTEGER, TokenType.REAL, TokenType.LOGICAL, TokenType.DOUBLEPRECISION) and
                  self.peek().type == TokenType.FUNCTION)):
                 subroutines = []
                 functions = []
@@ -1230,7 +1224,7 @@ class Parser:
                         break
                     if self.match(TokenType.SUBROUTINE):
                         subroutines.append(self.parse_subroutine())
-                    elif self.match(TokenType.INTEGER, TokenType.REAL, TokenType.LOGICAL):
+                    elif self.match(TokenType.INTEGER, TokenType.REAL, TokenType.LOGICAL, TokenType.DOUBLEPRECISION):
                         saved_pos = self.pos
                         self.advance()
                         if self.match(TokenType.FUNCTION):
@@ -1245,7 +1239,7 @@ class Parser:
                         break
                 return Program(name="", declarations=declarations, statements=[],
                               statement_functions=[], subroutines=subroutines, functions=functions)
-        
+
         statements = []
         statement_functions = []
         while not self.match(TokenType.END, TokenType.EOF):
@@ -1253,13 +1247,13 @@ class Parser:
             if self.match(TokenType.END, TokenType.EOF):
                 break
             if self.match(TokenType.INTEGER, TokenType.REAL, TokenType.LOGICAL, TokenType.COMPLEX, TokenType.CHARACTER,
-                         TokenType.DIMENSION, TokenType.PARAMETER):
+                         TokenType.DOUBLEPRECISION, TokenType.DIMENSION, TokenType.PARAMETER):
                 break
             stmt = self.parse_statement()
             if stmt:
                 statements.append(stmt)
         self.expect(TokenType.END)
-        
+
         subroutines = []
         functions = []
         while not self.match(TokenType.EOF):
@@ -1268,7 +1262,7 @@ class Parser:
                 break
             if self.match(TokenType.SUBROUTINE):
                 subroutines.append(self.parse_subroutine())
-            elif self.match(TokenType.INTEGER, TokenType.REAL, TokenType.LOGICAL):
+            elif self.match(TokenType.INTEGER, TokenType.REAL, TokenType.LOGICAL, TokenType.DOUBLEPRECISION):
                 saved_pos = self.pos
                 self.advance()
                 if self.match(TokenType.FUNCTION):
@@ -1281,15 +1275,17 @@ class Parser:
                 functions.append(self.parse_function())
             else:
                 break
-        
+
         return Program(name=name, declarations=declarations, statements=statements,
                       statement_functions=statement_functions, subroutines=subroutines, functions=functions)
 
     def parse_declaration(self) -> List[Declaration]:
         decls = []
-        if self.match(TokenType.INTEGER, TokenType.REAL, TokenType.LOGICAL, TokenType.COMPLEX, TokenType.CHARACTER):
+        if self.match(TokenType.INTEGER, TokenType.REAL, TokenType.LOGICAL, TokenType.COMPLEX, TokenType.CHARACTER, TokenType.DOUBLEPRECISION):
             type_token = self.advance()
             type_name = type_token.value.upper()
+            if type_name == "DOUBLEPRECISION":
+                type_name = "REAL"
             type_size = None
             if self.match(TokenType.STAR):
                 self.advance()
@@ -1384,9 +1380,9 @@ class Parser:
             return ImplicitNone()
         rules = []
         while True:
-            if not self.match(TokenType.INTEGER, TokenType.REAL, TokenType.LOGICAL, TokenType.COMPLEX, TokenType.CHARACTER):
+            if not self.match(TokenType.INTEGER, TokenType.REAL, TokenType.LOGICAL, TokenType.COMPLEX, TokenType.CHARACTER, TokenType.DOUBLEPRECISION):
                 raise SyntaxError(
-                    f"Ожидается тип (INTEGER/REAL/LOGICAL/COMPLEX/CHARACTER) в IMPLICIT на строке {self.current().line}:{self.current().col}"
+                    f"Ожидается тип (INTEGER/REAL/LOGICAL/COMPLEX/CHARACTER/DOUBLE PRECISION) в IMPLICIT на строке {self.current().line}:{self.current().col}"
                 )
             type_token = self.advance()
             type_name = type_token.value.upper()
@@ -1571,33 +1567,56 @@ class Parser:
                 self.pos = saved_pos
                 label = None
         if self.match(TokenType.IF):
-            return self.parse_if_statement()
+            stmt = self.parse_if_statement()
+            if label: stmt.stmt_label = label
+            return stmt
         elif self.match(TokenType.DO):
-            return self.parse_do_loop()
+            stmt = self.parse_do_loop()
+            if label: stmt.stmt_label = label
+            return stmt
         elif self.match(TokenType.PRINT):
-            return self.parse_print_statement()
+            stmt = self.parse_print_statement()
+            if label: stmt.stmt_label = label
+            return stmt
         elif self.match(TokenType.READ):
-            return self.parse_read_statement()
+            stmt = self.parse_read_statement()
+            if label: stmt.stmt_label = label
+            return stmt
         elif self.match(TokenType.WRITE):
-            return self.parse_write_statement()
+            stmt = self.parse_write_statement()
+            if label: stmt.stmt_label = label
+            return stmt
         elif self.match(TokenType.STOP):
             self.advance()
-            return StopStatement()
+            stmt = StopStatement()
+            if label: stmt.stmt_label = label
+            return stmt
         elif self.match(TokenType.GOTO):
-            return self.parse_goto_statement()
+            stmt = self.parse_goto_statement()
+            if label: stmt.stmt_label = label
+            return stmt
         elif self.match(TokenType.CONTINUE):
             self.advance()
-            return ContinueStatement(label=label)
+            stmt = ContinueStatement(label=label)
+            if label: stmt.stmt_label = label
+            return stmt
         elif self.match(TokenType.DATA):
             data_stmt = self.parse_data_statement()
+            if label: data_stmt.stmt_label = label
             return data_stmt
         elif self.match(TokenType.CALL):
-            return self.parse_call_statement()
+            stmt = self.parse_call_statement()
+            if label: stmt.stmt_label = label
+            return stmt
         elif self.match(TokenType.RETURN):
             self.advance()
-            return ReturnStatement()
+            stmt = ReturnStatement()
+            if label: stmt.stmt_label = label
+            return stmt
         elif self.match(TokenType.IDENTIFIER):
-            return self.parse_assignment_or_label()
+            stmt = self.parse_assignment_or_label()
+            if label: stmt.stmt_label = label
+            return stmt
         elif self.match(TokenType.END, TokenType.ENDIF, TokenType.ENDDO, TokenType.ELSE, TokenType.ELSEIF):
             return None
         else:
@@ -1947,7 +1966,6 @@ class Parser:
         return GotoStatement(label=str(label_token.value))
 
     def parse_call_statement(self) -> CallStatement:
-        """Парсит CALL subroutine_name(arg1, arg2, ...)"""
         self.expect(TokenType.CALL)
         name_token = self.expect(TokenType.IDENTIFIER)
         name = name_token.value
@@ -1964,7 +1982,6 @@ class Parser:
         return CallStatement(name=name, args=args)
 
     def parse_subroutine(self) -> Subroutine:
-        """Парсит SUBROUTINE name(param1, param2, ...) ... END"""
         self.expect(TokenType.SUBROUTINE)
         name_token = self.expect(TokenType.IDENTIFIER)
         name = name_token.value
@@ -1979,13 +1996,13 @@ class Parser:
                         break
                     self.advance()
             self.expect(TokenType.RPAREN)
-        
+
         declarations = []
         self.skip_comments()
         while self.match(TokenType.IMPLICIT):
             declarations.append(self.parse_implicit_statement())
         while self.match(TokenType.INTEGER, TokenType.REAL, TokenType.LOGICAL, TokenType.COMPLEX, TokenType.CHARACTER,
-                         TokenType.DIMENSION, TokenType.PARAMETER, TokenType.DATA):
+                         TokenType.DOUBLEPRECISION, TokenType.DIMENSION, TokenType.PARAMETER, TokenType.DATA):
             if self.match(TokenType.DIMENSION):
                 declarations.append(self.parse_dimension_statement())
             elif self.match(TokenType.PARAMETER):
@@ -1995,7 +2012,7 @@ class Parser:
             else:
                 declarations.extend(self.parse_declaration())
             self.skip_comments()
-        
+
         statements = []
         while not self.match(TokenType.END, TokenType.EOF):
             self.skip_comments()
@@ -2005,16 +2022,17 @@ class Parser:
             if stmt:
                 statements.append(stmt)
         self.expect(TokenType.END)
-        
+
         return Subroutine(name=name, params=params, declarations=declarations, statements=statements)
 
     def parse_function(self) -> FunctionDef:
-        """Парсит [type] FUNCTION name(param1, param2, ...) ... END"""
         return_type = None
-        if self.match(TokenType.INTEGER, TokenType.REAL, TokenType.LOGICAL):
+        if self.match(TokenType.INTEGER, TokenType.REAL, TokenType.LOGICAL, TokenType.DOUBLEPRECISION):
             type_token = self.advance()
             return_type = type_token.value.upper()
-        
+            if return_type == "DOUBLEPRECISION":
+                return_type = "REAL"
+
         self.expect(TokenType.FUNCTION)
         name_token = self.expect(TokenType.IDENTIFIER)
         name = name_token.value
@@ -2029,13 +2047,13 @@ class Parser:
                         break
                     self.advance()
             self.expect(TokenType.RPAREN)
-        
+
         declarations = []
         self.skip_comments()
         while self.match(TokenType.IMPLICIT):
             declarations.append(self.parse_implicit_statement())
         while self.match(TokenType.INTEGER, TokenType.REAL, TokenType.LOGICAL, TokenType.COMPLEX, TokenType.CHARACTER,
-                         TokenType.DIMENSION, TokenType.PARAMETER, TokenType.DATA):
+                         TokenType.DOUBLEPRECISION, TokenType.DIMENSION, TokenType.PARAMETER, TokenType.DATA):
             if self.match(TokenType.DIMENSION):
                 declarations.append(self.parse_dimension_statement())
             elif self.match(TokenType.PARAMETER):
@@ -2045,7 +2063,7 @@ class Parser:
             else:
                 declarations.extend(self.parse_declaration())
             self.skip_comments()
-        
+
         statements = []
         while not self.match(TokenType.END, TokenType.EOF):
             self.skip_comments()
@@ -2055,7 +2073,7 @@ class Parser:
             if stmt:
                 statements.append(stmt)
         self.expect(TokenType.END)
-        
+
         return FunctionDef(name=name, params=params, return_type=return_type,
                           declarations=declarations, statements=statements)
 
@@ -2172,18 +2190,29 @@ class Parser:
 
     def parse_primary_expression(self) -> Expression:
         if self.match(TokenType.LPAREN):
+            saved_pos = self.pos
             self.advance()
+            first_neg = False
+            if self.match(TokenType.MINUS):
+                first_neg = True
+                self.advance()
             if self.match(TokenType.REAL_LIT, TokenType.INTEGER_LIT):
                 first_token = self.advance()
                 if self.match(TokenType.COMMA):
                     self.advance()
+                    second_neg = False
+                    if self.match(TokenType.MINUS):
+                        second_neg = True
+                        self.advance()
                     if self.match(TokenType.REAL_LIT, TokenType.INTEGER_LIT):
                         second_token = self.advance()
                         if self.match(TokenType.RPAREN):
                             self.advance()
-                            real_part = float(first_token.value)
-                            imag_part = float(second_token.value)
+                            real_part = float(first_token.value) * (-1 if first_neg else 1)
+                            imag_part = float(second_token.value) * (-1 if second_neg else 1)
                             return ComplexLiteral(real_part=real_part, imag_part=imag_part, line=first_token.line, col=first_token.col)
+            self.pos = saved_pos
+            self.advance()
             expr = self.parse_expression()
             self.expect(TokenType.RPAREN)
             return expr

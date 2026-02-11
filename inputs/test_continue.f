@@ -11,4 +11,3 @@
       ENDDO
       PRINT *, SUM
       END
-

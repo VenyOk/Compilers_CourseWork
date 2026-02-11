@@ -8,4 +8,3 @@
       Y = X ** B
       PRINT *, Y
       END
-

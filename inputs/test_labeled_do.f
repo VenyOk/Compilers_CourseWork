@@ -7,4 +7,3 @@
     10 CONTINUE
       PRINT *, SUM
       END
-

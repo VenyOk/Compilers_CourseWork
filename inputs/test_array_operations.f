@@ -21,4 +21,3 @@
       PRINT *, MINVAL
       PRINT *, C(5)
       END
-

@@ -7,4 +7,3 @@
       Y = A + X
       PRINT *, Y
       END
-

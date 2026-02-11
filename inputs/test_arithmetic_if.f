@@ -10,4 +10,3 @@
     30 PRINT *, 1
     40 CONTINUE
       END
-

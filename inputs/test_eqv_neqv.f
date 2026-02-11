@@ -7,4 +7,3 @@
       L4 = L1 .NEQV. L2
       PRINT *, L3, L4
       END
-

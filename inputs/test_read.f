@@ -5,4 +5,3 @@
       B = 20
       PRINT *, A + B
       END
-

@@ -9,4 +9,3 @@
       D = MAX(A, C)
       PRINT *, D
       END
-

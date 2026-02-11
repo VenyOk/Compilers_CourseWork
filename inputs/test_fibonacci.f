@@ -13,4 +13,3 @@
           PRINT *, FIB3
       ENDDO
       END
-

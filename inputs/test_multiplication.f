@@ -8,4 +8,3 @@
       RESULT = (A + B) * C / D
       PRINT *, RESULT
       END
-

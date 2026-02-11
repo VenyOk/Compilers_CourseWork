@@ -4,4 +4,3 @@
       STR = 'Hello'
       PRINT *, STR
       END
-

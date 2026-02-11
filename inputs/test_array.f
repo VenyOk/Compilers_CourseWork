@@ -6,4 +6,3 @@
       ENDDO
       PRINT *, A(5)
       END
-

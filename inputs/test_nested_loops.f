@@ -9,4 +9,3 @@
       ENDDO
       PRINT *, SUM
       END
-

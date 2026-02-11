@@ -6,4 +6,3 @@
       RESULT = A + B
       PRINT *, RESULT
       END
-

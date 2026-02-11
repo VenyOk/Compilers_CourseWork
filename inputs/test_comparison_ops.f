@@ -10,4 +10,3 @@
       L4 = A .GE. B
       PRINT *, L1, L2, L3, L4
       END
-

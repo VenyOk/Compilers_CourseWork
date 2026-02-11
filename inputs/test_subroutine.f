@@ -13,4 +13,3 @@
       A = B
       B = TEMP
       END
-

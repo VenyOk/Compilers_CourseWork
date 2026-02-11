@@ -16,35 +16,35 @@ class SSAGenerator:
         self.var_versions: Dict[str, int] = {}
         self.temp_counter = 0
         self.var_types: Dict[str, str] = {}
-        
+
         self.branch_var_versions: List[Dict[str, int]] = []
-        
+
     def generate(self, ast: Program) -> List[str]:
         self.instructions = []
         self.var_versions = {}
         self.temp_counter = 0
         self.var_types = {}
         self.branch_var_versions = []
-        
+
         self.instructions.append("====== SSA REPRESENTATION ======")
         self.instructions.append("")
-        
+
         for decl in ast.declarations:
             if isinstance(decl, Declaration):
                 self._process_declaration(decl)
-            
+
         for stmt in ast.statements:
             self._process_statement(stmt)
-            
+
         return self.instructions
-    
+
     def _process_declaration(self, decl: Declaration):
         for name_info in decl.names:
             var_name = name_info[0]
             self.var_types[var_name] = decl.type
             self.var_versions[var_name] = 0
             self.instructions.append(f"{var_name} = alloca {decl.type}")
-    
+
     def _process_statement(self, stmt: Statement):
         if isinstance(stmt, Assignment):
             self._process_assignment(stmt)
@@ -72,19 +72,19 @@ class SSAGenerator:
             pass
         elif isinstance(stmt, ContinueStatement):
             pass
-    
+
     def _process_assignment(self, assign: Assignment):
         target = assign.target
         value_expr = self._process_expression(assign.value)
-        
+
         if target not in self.var_versions:
             self.var_versions[target] = 0
-        
+
         self.var_versions[target] += 1
         version = self.var_versions[target]
-        
+
         self.instructions.append(f"{target}_{version} = assign {value_expr}")
-    
+
     def _process_expression(self, expr: Expression) -> str:
         if isinstance(expr, IntegerLiteral):
             return str(expr.value)
@@ -137,7 +137,7 @@ class SSAGenerator:
             return temp_name
         else:
             return "unknown"
-    
+
     def _get_op_symbol(self, op: str) -> str:
         op_map = {
             '+': '+',
@@ -165,7 +165,7 @@ class SSAGenerator:
             '.NEQV.': 'neqv',
         }
         return op_map.get(op, op)
-    
+
     def _get_unary_op_symbol(self, op: str) -> str:
         op_map = {
             '-': '-',
@@ -175,88 +175,88 @@ class SSAGenerator:
             'NOT': 'not',
         }
         return op_map.get(op, op)
-    
+
     def _process_print(self, stmt: PrintStatement):
         for item in stmt.items:
             value = self._process_expression(item)
             self.instructions.append(f"print {value}")
-    
+
     def _process_write(self, stmt: WriteStatement):
         for item in stmt.items:
             value = self._process_expression(item)
             self.instructions.append(f"write {value}")
-    
+
     def _process_call(self, stmt: CallStatement):
         args = [self._process_expression(arg) for arg in stmt.args]
         args_str = " ".join(args) if args else ""
         self.instructions.append(f"call {stmt.name} {args_str}")
-    
+
     def _process_do_loop(self, stmt: DoLoop):
         var = stmt.var
         start = self._process_expression(stmt.start)
         end = self._process_expression(stmt.end)
         step = self._process_expression(stmt.step) if stmt.step else "1"
-        
+
         if var not in self.var_versions:
             self.var_versions[var] = 0
-        
-        
+
+
         before_loop_versions = self.var_versions.copy()
-        
-        
+
+
         self.var_versions[var] += 1
         init_version = self.var_versions[var]
-        
+
         self.instructions.append(f"do {var}_{init_version} = {start} {end} {step}")
-        
+
         for body_stmt in stmt.body:
             self._process_statement(body_stmt)
-        
+
         after_body_versions = self.var_versions.copy()
-        
+
         self.instructions.append("end do")
-        
+
         if var in after_body_versions and after_body_versions[var] > init_version:
             self.var_versions[var] = after_body_versions[var] + 1
             new_version = self.var_versions[var]
             init_val = f"{var}_{init_version}"
             body_val = f"{var}_{after_body_versions[var]}"
             self.instructions.append(f"{var}_{new_version} = phi {init_val} {body_val}")
-        
+
         modified_vars = set()
         for v in after_body_versions:
             if v != var and after_body_versions[v] > before_loop_versions.get(v, 0):
                 modified_vars.add(v)
-        
+
         for v in modified_vars:
             before_val = f"{v}_{before_loop_versions.get(v, 0)}" if before_loop_versions.get(v, 0) > 0 else v
             after_val = f"{v}_{after_body_versions[v]}"
             self.var_versions[v] = after_body_versions[v] + 1
             new_version = self.var_versions[v]
             self.instructions.append(f"{v}_{new_version} = phi {before_val} {after_val}")
-    
+
     def _process_do_while(self, stmt: DoWhile):
         condition = self._process_expression(stmt.condition)
         self.instructions.append(f"do while {condition}")
         for body_stmt in stmt.body:
             self._process_statement(body_stmt)
         self.instructions.append("end do")
-    
+
     def _process_if_statement(self, stmt: IfStatement):
         condition = self._process_expression(stmt.condition)
-         
+
         before_versions = self.var_versions.copy()
-        
+
         self.instructions.append(f"if {condition} then")
-        
+
         then_versions = self.var_versions.copy()
         for then_stmt in stmt.then_body:
             self._process_statement(then_stmt)
         then_versions = self.var_versions.copy()
-        
+
         self.var_versions = before_versions.copy()
         elif_versions_list = []
-        
+
         for elif_cond, elif_body in stmt.elif_parts:
             elif_cond_str = self._process_expression(elif_cond)
             self.instructions.append(f"elseif {elif_cond_str} then")
@@ -264,24 +264,24 @@ class SSAGenerator:
                 self._process_statement(elif_stmt)
             elif_versions_list.append(self.var_versions.copy())
             self.var_versions = before_versions.copy()
-        
+
         else_versions = None
         if stmt.else_body:
             self.instructions.append("else")
             for else_stmt in stmt.else_body:
                 self._process_statement(else_stmt)
             else_versions = self.var_versions.copy()
-        
+
         self.instructions.append("end if")
-        
+
         all_modified_vars = set()
         all_modified_vars.update(then_versions.keys())
         for elif_vers in elif_versions_list:
             all_modified_vars.update(elif_vers.keys())
         if else_versions:
             all_modified_vars.update(else_versions.keys())
-        
-        
+
+
         modified_vars = set()
         for var in all_modified_vars:
             if var in then_versions and then_versions[var] > before_versions.get(var, 0):
@@ -291,13 +291,13 @@ class SSAGenerator:
                     modified_vars.add(var)
             if else_versions and var in else_versions and else_versions[var] > before_versions.get(var, 0):
                 modified_vars.add(var)
-        
-        
+
+
         merged_versions = {}
         for var in modified_vars:
             phi_args = []
-            
-            
+
+
             if var in then_versions:
                 then_ver = then_versions[var]
                 if then_ver > before_versions.get(var, 0):
@@ -306,8 +306,8 @@ class SSAGenerator:
                     phi_args.append(f"{var}_{before_versions.get(var, 0)}" if before_versions.get(var, 0) > 0 else var)
             else:
                 phi_args.append(f"{var}_{before_versions.get(var, 0)}" if before_versions.get(var, 0) > 0 else var)
-            
-            
+
+
             for elif_vers in elif_versions_list:
                 if var in elif_vers:
                     elif_ver = elif_vers[var]
@@ -317,8 +317,8 @@ class SSAGenerator:
                         phi_args.append(f"{var}_{before_versions.get(var, 0)}" if before_versions.get(var, 0) > 0 else var)
                 else:
                     phi_args.append(f"{var}_{before_versions.get(var, 0)}" if before_versions.get(var, 0) > 0 else var)
-            
-            
+
+
             if else_versions:
                 if var in else_versions:
                     else_ver = else_versions[var]
@@ -328,23 +328,23 @@ class SSAGenerator:
                         phi_args.append(f"{var}_{before_versions.get(var, 0)}" if before_versions.get(var, 0) > 0 else var)
                 else:
                     phi_args.append(f"{var}_{before_versions.get(var, 0)}" if before_versions.get(var, 0) > 0 else var)
-    
-            if len(phi_args) > 1 and len(set(phi_args)) > 1:       
-                self.var_versions[var] = max(then_versions.get(var, 0), 
+
+            if len(phi_args) > 1 and len(set(phi_args)) > 1:
+                self.var_versions[var] = max(then_versions.get(var, 0),
                                             max([ev.get(var, 0) for ev in elif_versions_list], default=0),
                                             else_versions.get(var, 0) if else_versions else 0) + 1
                 new_version = self.var_versions[var]
                 phi_args_str = " ".join(phi_args)
                 self.instructions.append(f"{var}_{new_version} = phi {phi_args_str}")
                 merged_versions[var] = new_version
-            else:      
+            else:
                 if phi_args:
                     last_ver = phi_args[-1]
                     if "_" in last_ver:
                         ver_num = int(last_ver.split("_")[-1])
                         self.var_versions[var] = ver_num
                     else:
-                        self.var_versions[var] = before_versions.get(var, 0)  
+                        self.var_versions[var] = before_versions.get(var, 0)
         for var in before_versions:
             if var not in merged_versions:
                 max_ver = max(
@@ -355,14 +355,14 @@ class SSAGenerator:
                 self.var_versions[var] = max_ver
     def _process_simple_if(self, stmt: SimpleIfStatement):
         condition = self._process_expression(stmt.condition)
-        
+
         before_versions = self.var_versions.copy()
-        
+
         self.instructions.append(f"if {condition} then")
         for then_stmt in [stmt.statement]:
             self._process_statement(then_stmt)
         then_versions = self.var_versions.copy()
-        
+
         self.instructions.append("end if")
         modified_vars = set()
         for var in then_versions:
@@ -371,7 +371,7 @@ class SSAGenerator:
         for var in modified_vars:
             then_ver = then_versions[var]
             before_ver = before_versions.get(var, 0)
-            
+
             if then_ver > before_ver:
                 self.var_versions[var] = then_ver + 1
                 new_version = self.var_versions[var]
@@ -380,7 +380,6 @@ class SSAGenerator:
                 self.instructions.append(f"{var}_{new_version} = phi {before_val} {then_val}")
             else:
                 self.var_versions[var] = then_ver
-    
+
     def to_string(self, instructions: List[str]) -> str:
         return "\n".join(instructions)
-

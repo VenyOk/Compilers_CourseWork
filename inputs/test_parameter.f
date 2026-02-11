@@ -6,4 +6,3 @@
       AREA = PI * R * R
       PRINT *, AREA
       END
-

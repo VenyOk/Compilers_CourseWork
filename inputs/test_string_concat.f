@@ -6,4 +6,3 @@
       STR3 = STR1 // STR2
       PRINT *, STR3
       END
-

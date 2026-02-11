@@ -8,14 +8,15 @@ from src.core import (
     StringLiteral, LogicalLiteral, FunctionCall, Expression,
     ReturnStatement, StopStatement, DoWhile, LabeledDoLoop, LabeledDoWhile,
     SimpleIfStatement, ArrayRef, DimensionStatement, GotoStatement, ContinueStatement,
-    Subroutine, FunctionDef, ImplicitNone, ImplicitStatement, ComplexLiteral
+    Subroutine, FunctionDef, ImplicitNone, ImplicitStatement, ComplexLiteral,
+    ParameterStatement, ArithmeticIfStatement
 )
 
 
 def _get_default_target_triple() -> str:
     system = platform.system().lower()
     machine = platform.machine().lower()
-    
+
     if system == "windows":
         if "64" in machine or machine == "amd64" or machine == "x86_64":
             return "x86_64-w64-windows-gnu"
@@ -49,16 +50,18 @@ class LLVMGenerator:
             'LOGICAL': 'i1',
             'CHARACTER': 'i8*',
             'COMPLEX': '{double, double}',
+            'DOUBLEPRECISION': 'double',
         }
         self.implicit_rules = {}
         self.implicit_none = False
-        # Для отслеживания phi-функций
-        self.var_ssa_versions: Dict[str, str] = {}  # Имя переменной -> текущая SSA версия
-        self.phi_tracking: List[Dict[str, str]] = []  # Стек для отслеживания переменных в ветках
-        self.last_block_before_endif: Dict[str, str] = {}  # if_id -> последний блок перед endif
-        self.array_dimensions: Dict[str, List[int]] = {}  # Имя массива -> размеры [N, M, ...]
-        self.last_block_label: str = ""  # Последний сгенерированный блок
-        self.current_subroutine_params: List[str] = []  # Параметры текущей подпрограммы
+
+        self.var_ssa_versions: Dict[str, str] = {}
+        self.phi_tracking: List[Dict[str, str]] = []
+        self.last_block_before_endif: Dict[str, str] = {}
+        self.array_dimensions: Dict[str, List[int]] = {}
+        self.last_block_label: str = ""
+        self.current_block: str = "entry"
+        self.current_subroutine_params: List[str] = []
 
     def generate(self, ast: Program) -> str:
         self.code_lines = []
@@ -73,11 +76,28 @@ class LLVMGenerator:
         self.phi_tracking = []
         self.array_dimensions = {}
         self.current_subroutine_params = []
-        
+
         for stmt_func in ast.statement_functions:
             if hasattr(stmt_func, 'name') and stmt_func.name:
                 self.statement_functions[stmt_func.name.upper()] = stmt_func
-        
+
+        self.user_functions: Dict[str, tuple] = {}
+        for func in ast.functions:
+            fname = func.name.upper()
+            ret_type = "i32"
+            if func.return_type:
+                ret_type = self.type_map.get(func.return_type.upper(), 'i32')
+            param_type_map = {}
+            for decl in func.declarations:
+                if hasattr(decl, 'names') and hasattr(decl, 'type'):
+                    llvm_t = self.type_map.get(decl.type, 'i32')
+                    for pname, _ in decl.names:
+                        param_type_map[pname.upper()] = llvm_t
+            param_types = []
+            for p in func.params:
+                param_types.append(param_type_map.get(p.upper(), 'i32'))
+            self.user_functions[fname] = (ret_type, param_types)
+
         self._collect_strings(ast)
         self._emit_header()
         self._emit_external_declarations()
@@ -86,13 +106,13 @@ class LLVMGenerator:
         self.local_counter = 0
         self.var_alloc = {}
         self._emit_program(ast)
-        
+
         for sub in ast.subroutines:
             self._emit_subroutine(sub)
-        
+
         for func in ast.functions:
             self._emit_function(func)
-        
+
         if self.strings:
             strings_lines = ["; === Глобальные строки ==="]
             for string_val, (string_name, str_size) in self.strings.items():
@@ -106,12 +126,12 @@ class LLVMGenerator:
             strings_lines.append("")
             self.code_lines[strings_line_start:strings_line_start +
                             1] = strings_lines
-        
+
         if ast.subroutines or ast.functions:
             self.code_lines.append("; === Атрибуты функций для совместимости с Си ===")
             self.code_lines.append("attributes #0 = { nounwind }")
             self.code_lines.append("")
-        
+
         return "\n".join(self.code_lines)
 
     def _collect_strings(self, node):
@@ -184,6 +204,7 @@ class LLVMGenerator:
             self.code_lines.append("; === Основная программа ===")
             self.code_lines.append("define i32 @main() {")
             self.code_lines.append("entry:")
+            self._set_current_block("entry")
             self.local_counter = 0
             self.var_alloc = {}
             self.var_ssa_versions = {}
@@ -198,6 +219,7 @@ class LLVMGenerator:
             self.code_lines.append("; === Основная программа (только объявления) ===")
             self.code_lines.append("define i32 @main() {")
             self.code_lines.append("entry:")
+            self._set_current_block("entry")
             self.local_counter = 0
             self.var_alloc = {}
             self.var_ssa_versions = {}
@@ -208,32 +230,44 @@ class LLVMGenerator:
             self.code_lines.append("")
 
     def _emit_declarations(self, declarations: List[Declaration]):
+        dim_pending = {}
         for decl in declarations:
             if isinstance(decl, DimensionStatement):
                 for name, dims in decl.names:
-                    if name in self.var_alloc:
-                        continue
-                    llvm_type = 'double'
-                    if dims:
-                        size = 1
-                        for d in dims:
-                            if isinstance(d, tuple):
-                                start, end = d
-                                size *= (end - start + 1)
-                            else:
-                                size *= d
-                        alloc_type = f"[{size} x {llvm_type}]"
-                        local_name = f"%{name}"
-                    else:
-                        alloc_type = llvm_type
-                        local_name = f"%{name}"
-                    self.code_lines.append(f"  {local_name} = alloca {alloc_type}")
-                    self.var_alloc[name] = (alloc_type, local_name)
+                    dim_pending[name] = dims
+                continue
+            if isinstance(decl, ParameterStatement):
+                for param_name, param_expr in decl.params:
+                    val, val_type = self._emit_expression(param_expr)
+                    if param_name not in self.var_alloc:
+                        local_name = f"%{param_name}"
+                        self.code_lines.append(f"  {local_name} = alloca {val_type}")
+                        self.var_alloc[param_name] = (val_type, local_name)
+                    alloc_type, ptr_name = self.var_alloc[param_name]
+                    base_type = alloc_type if '[' not in alloc_type else alloc_type
+                    self.code_lines.append(f"  store {val_type} {val}, {val_type}* {ptr_name}")
                 continue
             if hasattr(decl, 'names') and hasattr(decl, 'type'):
                 llvm_type = self.type_map.get(decl.type, 'i32')
                 for name, dims in decl.names:
+                    if name.upper() in self.user_functions:
+                        continue
+                    if name in dim_pending and not dims:
+                        dims = dim_pending.pop(name)
                     if name in self.var_alloc:
+                        old_alloc_type, old_ptr = self.var_alloc[name]
+                        old_base = old_alloc_type.split(' x ')[-1].rstrip(']') if '[' in old_alloc_type else old_alloc_type
+                        if old_base != llvm_type and '[' in old_alloc_type:
+                            total_size = int(old_alloc_type.split('[')[1].split(']')[0].split(' x ')[0])
+                            new_alloc_type = f"[{total_size} x {llvm_type}]"
+                            idx = None
+                            for ci, line in enumerate(self.code_lines):
+                                if f"{old_ptr} = alloca {old_alloc_type}" in line:
+                                    idx = ci
+                                    break
+                            if idx is not None:
+                                self.code_lines[idx] = f"  {old_ptr} = alloca {new_alloc_type}"
+                            self.var_alloc[name] = (new_alloc_type, old_ptr)
                         continue
                     if decl.type.startswith('CHARACTER') and decl.type_size:
                         char_size = int(decl.type_size)
@@ -258,7 +292,7 @@ class LLVMGenerator:
                                 dim_sizes.append(d)
                         alloc_type = f"[{size} x {llvm_type}]"
                         local_name = f"%{name}"
-                        # Сохраняем размеры для всех массивов (не только параметров)
+
                         self.array_dimensions[name.upper()] = dim_sizes
                     else:
                         alloc_type = llvm_type
@@ -267,7 +301,40 @@ class LLVMGenerator:
                         f"  {local_name} = alloca {alloc_type}")
                     self.var_alloc[name] = (alloc_type, local_name)
 
+        for name, dims in dim_pending.items():
+            if name in self.var_alloc:
+                continue
+            llvm_type = 'double'
+            implicit_type_name, _ = self._get_implicit_type(name)
+            if implicit_type_name and implicit_type_name != "UNKNOWN":
+                llvm_type = self.type_map.get(implicit_type_name, 'double')
+            if dims:
+                size = 1
+                dim_sizes = []
+                for d in dims:
+                    if isinstance(d, tuple):
+                        start, end = d
+                        dim_size = (end - start + 1)
+                        size *= dim_size
+                        dim_sizes.append(dim_size)
+                    else:
+                        size *= d
+                        dim_sizes.append(d)
+                alloc_type = f"[{size} x {llvm_type}]"
+                local_name = f"%{name}"
+                self.array_dimensions[name.upper()] = dim_sizes
+            else:
+                alloc_type = llvm_type
+                local_name = f"%{name}"
+            self.code_lines.append(f"  {local_name} = alloca {alloc_type}")
+            self.var_alloc[name] = (alloc_type, local_name)
+
     def _emit_statement(self, stmt: Statement):
+        if hasattr(stmt, 'stmt_label') and stmt.stmt_label and not isinstance(stmt, ContinueStatement):
+            label_name = f"label_{stmt.stmt_label}"
+            self._emit_br_if_not_terminated(label_name)
+            self.code_lines.append(f"{label_name}:")
+            self._set_current_block(label_name)
         if isinstance(stmt, Assignment):
             self._emit_assignment(stmt)
         elif isinstance(stmt, DoLoop):
@@ -296,6 +363,8 @@ class LLVMGenerator:
             self._emit_goto_statement(stmt)
         elif isinstance(stmt, ContinueStatement):
             self._emit_continue_statement(stmt)
+        elif isinstance(stmt, ArithmeticIfStatement):
+            self._emit_arithmetic_if(stmt)
         elif isinstance(stmt, StopStatement):
             self.code_lines.append("  ret i32 0")
 
@@ -308,92 +377,32 @@ class LLVMGenerator:
                 alloc_type, ptr_name = self.var_alloc[stmt.target]
                 base_type = alloc_type if '[' not in alloc_type else alloc_type.split(
                     '[')[1].split(']')[0].split(' x ')[1]
-                
-                # Если это указатель (параметр подпрограммы)
+
+
+                linear_idx = self._compute_linear_index(indices_vals, stmt.target)
                 if '[' not in alloc_type:
-                    # Параметр-массив передается как указатель
-                    if len(indices_vals) == 1:
-                        adjusted_idx = self._new_local()
-                        self.code_lines.append(
-                            f"  {adjusted_idx} = sub i32 {indices_vals[0]}, 1")
-                        elem_ptr = self._new_local()
-                        self.code_lines.append(
-                            f"  {elem_ptr} = getelementptr inbounds {base_type}, "
-                            f"{base_type}* {ptr_name}, i32 {adjusted_idx}"
-                        )
-                    else:
-                        # Многомерный массив: вычисляем линейный индекс
-                        # Используем сохраненные размеры массива
-                        array_dims = self.array_dimensions.get(stmt.target.upper(), [8, 8])  # По умолчанию 8x8
-                        if len(array_dims) >= 2:
-                            second_dim = array_dims[1]  # Размер второй размерности
-                        else:
-                            second_dim = 8  # По умолчанию
-                        
-                        i_adjusted = self._new_local()
-                        self.code_lines.append(
-                            f"  {i_adjusted} = sub i32 {indices_vals[0]}, 1")
-                        j_adjusted = self._new_local()
-                        self.code_lines.append(
-                            f"  {j_adjusted} = sub i32 {indices_vals[1]}, 1")
-                        i_mul = self._new_local()
-                        self.code_lines.append(
-                            f"  {i_mul} = mul i32 {i_adjusted}, {second_dim}")
-                        linear_idx = self._new_local()
-                        self.code_lines.append(
-                            f"  {linear_idx} = add i32 {i_mul}, {j_adjusted}")
-                        elem_ptr = self._new_local()
-                        self.code_lines.append(
-                            f"  {elem_ptr} = getelementptr inbounds {base_type}, "
-                            f"{base_type}* {ptr_name}, i32 {linear_idx}"
-                        )
+                    elem_ptr = self._new_local()
                     self.code_lines.append(
-                        f"  store {rhs_type} {rhs_val}, {rhs_type}* {elem_ptr}")
-                elif '[' in alloc_type:
-                    # Многомерный массив в основной программе
-                    if len(indices_vals) > 1:
-                        # Вычисляем линейный индекс для многомерного массива
-                        array_dims = self.array_dimensions.get(stmt.target.upper(), [])
-                        if len(array_dims) >= 2:
-                            second_dim = array_dims[1]
-                        else:
-                            # Если размеры не найдены, пытаемся вычислить из alloc_type
-                            # alloc_type = "[4 x i32]" для массива 2x2
-                            total_size = int(alloc_type.split('[')[1].split(']')[0].split(' x ')[0])
-                            # Предполагаем квадратную матрицу
-                            second_dim = int(total_size ** 0.5) if total_size > 0 else 8
-                        
-                        i_adjusted = self._new_local()
-                        self.code_lines.append(
-                            f"  {i_adjusted} = sub i32 {indices_vals[0]}, 1")
-                        j_adjusted = self._new_local()
-                        self.code_lines.append(
-                            f"  {j_adjusted} = sub i32 {indices_vals[1]}, 1")
-                        i_mul = self._new_local()
-                        self.code_lines.append(
-                            f"  {i_mul} = mul i32 {i_adjusted}, {second_dim}")
-                        linear_idx = self._new_local()
-                        self.code_lines.append(
-                            f"  {linear_idx} = add i32 {i_mul}, {j_adjusted}")
-                        elem_ptr = self._new_local()
-                        self.code_lines.append(
-                            f"  {elem_ptr} = getelementptr inbounds {alloc_type}, "
-                            f"{alloc_type}* {ptr_name}, i64 0, i32 {linear_idx}"
-                        )
-                    else:
-                        # Одномерный массив
-                        idx = indices_vals[0]
-                        adjusted_idx = self._new_local()
-                        self.code_lines.append(
-                            f"  {adjusted_idx} = sub i32 {idx}, 1")
-                        elem_ptr = self._new_local()
-                        self.code_lines.append(
-                            f"  {elem_ptr} = getelementptr inbounds {alloc_type}, "
-                            f"{alloc_type}* {ptr_name}, i64 0, i32 {adjusted_idx}"
-                        )
+                        f"  {elem_ptr} = getelementptr inbounds {base_type}, "
+                        f"{base_type}* {ptr_name}, i32 {linear_idx}")
+                else:
+                    elem_ptr = self._new_local()
                     self.code_lines.append(
-                        f"  store {rhs_type} {rhs_val}, {rhs_type}* {elem_ptr}")
+                        f"  {elem_ptr} = getelementptr inbounds {alloc_type}, "
+                        f"{alloc_type}* {ptr_name}, i64 0, i32 {linear_idx}")
+                self.code_lines.append(
+                    f"  store {rhs_type} {rhs_val}, {rhs_type}* {elem_ptr}")
         else:
+            if stmt.target not in self.var_alloc:
+                var_name = stmt.target.upper()
+                implicit_type_name, _ = self._get_implicit_type(var_name)
+                if implicit_type_name and implicit_type_name != "UNKNOWN":
+                    alloc_type = self.type_map.get(implicit_type_name, 'i32')
+                else:
+                    alloc_type = rhs_type if rhs_type in ('i32', 'double', 'i1') else 'i32'
+                local_name = f"%{stmt.target}"
+                self.code_lines.append(f"  {local_name} = alloca {alloc_type}")
+                self.var_alloc[stmt.target] = (alloc_type, local_name)
             if stmt.target in self.var_alloc:
                 alloc_type, ptr_name = self.var_alloc[stmt.target]
                 if '[' in alloc_type:
@@ -412,16 +421,16 @@ class LLVMGenerator:
                     self.code_lines.append(
                         f"  store {{double, double}} {rhs_val}, {{double, double}}* {ptr_name}")
                 else:
-                    # Если мы в ветке условного оператора, отслеживаем для phi
+
                     if self.phi_tracking:
-                        # Сохраняем значение
+
                         self.code_lines.append(
                             f"  store {base_type} {rhs_val}, {base_type}* {ptr_name}")
-                        # Загружаем обратно для phi
+
                         new_ssa = self._new_local()
                         self.code_lines.append(
                             f"  {new_ssa} = load {base_type}, {base_type}* {ptr_name}")
-                        # Сохраняем SSA версию для phi
+
                         self.phi_tracking[-1][stmt.target] = new_ssa
                     else:
                         self.code_lines.append(
@@ -441,6 +450,7 @@ class LLVMGenerator:
                 f"  store {base_type} {start_val}, {base_type}* {ptr}")
         self.code_lines.append(f"  br label %{loop_label}")
         self.code_lines.append(f"{loop_label}:")
+        self._set_current_block(loop_label)
         if stmt.var in self.var_alloc:
             alloc_type, ptr = self.var_alloc[stmt.var]
             base_type = alloc_type if '[' not in alloc_type else alloc_type.split(
@@ -455,6 +465,7 @@ class LLVMGenerator:
             self.code_lines.append(
                 f"  br i1 {cond}, label %{loop_body_label}, label %{loop_end_label}")
         self.code_lines.append(f"{loop_body_label}:")
+        self._set_current_block(loop_body_label)
         for body_stmt in stmt.body:
             self._emit_statement(body_stmt)
         step = 1
@@ -478,10 +489,11 @@ class LLVMGenerator:
                 f"  {next_val} = add {base_type} {loop_var}, {step}")
             self.code_lines.append(
                 f"  store {base_type} {next_val}, {base_type}* {ptr}")
-        self.code_lines.append(f"  br label %{loop_label}")
+        self._emit_br_if_not_terminated(loop_label)
         self.code_lines.append(f"{loop_end_label}:")
-        # Отслеживаем последний блок для PHI-узлов в if-операторах
-        # Обновляем все активные if-операторы, которые могут использовать этот блок
+        self._set_current_block(loop_end_label)
+
+
         for if_id_key in list(self.last_block_before_endif.keys()):
             self.last_block_before_endif[if_id_key] = loop_end_label
 
@@ -492,21 +504,28 @@ class LLVMGenerator:
         loop_end_label = f"do_while_end_{loop_id}"
         self.code_lines.append(f"  br label %{loop_label}")
         self.code_lines.append(f"{loop_label}:")
+        self._set_current_block(loop_label)
         cond_val, cond_type = self._emit_expression(stmt.condition)
         if cond_type != "i1":
             cond_bool = self._new_local()
-            self.code_lines.append(
-                f"  {cond_bool} = icmp ne {cond_type} {cond_val}, 0")
+            if cond_type == "double":
+                self.code_lines.append(
+                    f"  {cond_bool} = fcmp one double {cond_val}, 0.0")
+            else:
+                self.code_lines.append(
+                    f"  {cond_bool} = icmp ne {cond_type} {cond_val}, 0")
             cond_val = cond_bool
         self.code_lines.append(
             f"  br i1 {cond_val}, label %{loop_body_label}, label %{loop_end_label}")
         self.code_lines.append(f"{loop_body_label}:")
+        self._set_current_block(loop_body_label)
         for body_stmt in stmt.body:
             self._emit_statement(body_stmt)
-        self.code_lines.append(f"  br label %{loop_label}")
+        self._emit_br_if_not_terminated(loop_label)
         self.code_lines.append(f"{loop_end_label}:")
-        # Отслеживаем последний блок для PHI-узлов в if-операторах
-        # Обновляем все активные if-операторы, которые могут использовать этот блок
+        self._set_current_block(loop_end_label)
+
+
         for if_id_key in list(self.last_block_before_endif.keys()):
             self.last_block_before_endif[if_id_key] = loop_end_label
 
@@ -514,15 +533,19 @@ class LLVMGenerator:
         if_id = self._new_block_id()
         then_label = f"if_then_{if_id}"
         endif_label = f"if_end_{if_id}"
-        # Инициализируем отслеживание последнего блока для этого if
+
         self.last_block_before_endif[str(if_id)] = then_label
         cond_val, cond_type = self._emit_expression(stmt.condition)
         if cond_type != "i1":
             cond_bool = self._new_local()
-            self.code_lines.append(
-                f"  {cond_bool} = icmp ne {cond_type} {cond_val}, 0")
+            if cond_type == "double":
+                self.code_lines.append(
+                    f"  {cond_bool} = fcmp one double {cond_val}, 0.0")
+            else:
+                self.code_lines.append(
+                    f"  {cond_bool} = icmp ne {cond_type} {cond_val}, 0")
             cond_val = cond_bool
-        
+
         before_phi_vars = {}
         for var_name in self.var_alloc:
             if var_name in self.var_ssa_versions:
@@ -534,13 +557,16 @@ class LLVMGenerator:
                 self.code_lines.append(
                     f"  {before_val} = load {base_type}, {base_type}* {ptr_name}")
                 before_phi_vars[var_name] = before_val
-        
+
         self.phi_tracking.append({})
         then_phi_vars = {}
         elif_phi_vars_list = []
-        
+        then_end_block = then_label
+        else_end_block = None
+
         if stmt.elif_parts:
             elif_labels = []
+            elif_end_blocks = []
             for i, (elif_cond, _) in enumerate(stmt.elif_parts):
                 elif_labels.append(f"if_elif_{if_id}_{i}")
             else_label = f"if_else_{if_id}" if stmt.else_body else endif_label
@@ -549,115 +575,129 @@ class LLVMGenerator:
             self.code_lines.append(
                 f"  br i1 {cond_val}, label %{then_label}, label %{next_label}")
             self.code_lines.append(f"{then_label}:")
+            self._set_current_block(then_label)
             for s in stmt.then_body:
                 self._emit_statement(s)
             then_phi_vars = self.phi_tracking[-1].copy()
-            self.code_lines.append(f"  br label %{endif_label}")
-            
+            then_end_block = self.last_block_before_endif.get(str(if_id), then_label)
+            self._emit_br_if_not_terminated(endif_label)
+
             for i, (elif_cond, elif_body) in enumerate(stmt.elif_parts):
                 self.code_lines.append(f"{elif_labels[i]}:")
                 elif_cond_val, elif_cond_type = self._emit_expression(
                     elif_cond)
                 if elif_cond_type != "i1":
                     elif_cond_bool = self._new_local()
-                    self.code_lines.append(
-                        f"  {elif_cond_bool} = icmp ne {elif_cond_type} {elif_cond_val}, 0")
+                    if elif_cond_type == "double":
+                        self.code_lines.append(
+                            f"  {elif_cond_bool} = fcmp one double {elif_cond_val}, 0.0")
+                    else:
+                        self.code_lines.append(
+                            f"  {elif_cond_bool} = icmp ne {elif_cond_type} {elif_cond_val}, 0")
                     elif_cond_val = elif_cond_bool
                 next_elif_label = elif_labels[i + 1] if i + \
                     1 < len(elif_labels) else else_label
                 self.code_lines.append(
                     f"  br i1 {elif_cond_val}, label %if_elif_then_{if_id}_{i}, label %{next_elif_label}")
                 self.code_lines.append(f"if_elif_then_{if_id}_{i}:")
+                elif_then_label = f"if_elif_then_{if_id}_{i}"
+                self._set_current_block(elif_then_label)
+                self.last_block_before_endif[str(if_id)] = elif_then_label
                 self.phi_tracking[-1] = {}
                 for s in elif_body:
                     self._emit_statement(s)
                 elif_phi_vars_list.append(self.phi_tracking[-1].copy())
-                self.code_lines.append(f"  br label %{endif_label}")
-            
+                elif_end_blocks.append(self.last_block_before_endif.get(str(if_id), elif_then_label))
+                self._emit_br_if_not_terminated(endif_label)
+
             else_phi_vars = {}
             else_end_block = else_label
             if stmt.else_body:
                 self.code_lines.append(f"{else_label}:")
+                self._set_current_block(else_label)
+                self.last_block_before_endif[str(if_id)] = else_label
                 self.phi_tracking[-1] = {}
                 for s in stmt.else_body:
                     self._emit_statement(s)
                 else_phi_vars = self.phi_tracking[-1].copy()
-                # Если был установлен последний блок (например, из цикла), используем его
-                if str(if_id) in self.last_block_before_endif:
-                    else_end_block = self.last_block_before_endif[str(if_id)]
-                self.code_lines.append(f"  br label %{endif_label}")
-                # Сохраняем последний блок для PHI-узлов
-                self.last_block_before_endif[str(if_id)] = else_end_block
+                else_end_block = self.last_block_before_endif.get(str(if_id), else_label)
+                self._emit_br_if_not_terminated(endif_label)
+
+            self.last_block_before_endif[str(if_id)] = else_end_block if else_end_block else then_end_block
         else:
             else_label = f"if_else_{if_id}" if stmt.else_body else endif_label
             self.code_lines.append(
                 f"  br i1 {cond_val}, label %{then_label}, label %{else_label}")
             self.code_lines.append(f"{then_label}:")
+            self._set_current_block(then_label)
             for s in stmt.then_body:
                 self._emit_statement(s)
             then_phi_vars = self.phi_tracking[-1].copy()
-            self.code_lines.append(f"  br label %{endif_label}")
-            
+            then_end_block = self.last_block_before_endif.get(str(if_id), then_label)
+            self._emit_br_if_not_terminated(endif_label)
+
             else_phi_vars = {}
+            else_end_block = else_label
             if stmt.else_body:
                 self.code_lines.append(f"{else_label}:")
+                self._set_current_block(else_label)
+                self.last_block_before_endif[str(if_id)] = else_label
                 self.phi_tracking[-1] = {}
                 for s in stmt.else_body:
                     self._emit_statement(s)
                 else_phi_vars = self.phi_tracking[-1].copy()
-                # Отслеживаем последний блок перед переходом в endif
-                # Если есть циклы, они уже установили last_block_label
-                actual_else_end = self.last_block_before_endif.get(str(if_id), else_label)
-                self.code_lines.append(f"  br label %{endif_label}")
-                # Сохраняем последний блок для PHI-узлов
-                self.last_block_before_endif[str(if_id)] = actual_else_end
-        
+                else_end_block = self.last_block_before_endif.get(str(if_id), else_label)
+                self._emit_br_if_not_terminated(endif_label)
+
+            self.last_block_before_endif[str(if_id)] = else_end_block
+
         phi_instructions = []
         all_modified_vars = set(then_phi_vars.keys())
         for elif_vars in elif_phi_vars_list:
             all_modified_vars.update(elif_vars.keys())
         all_modified_vars.update(else_phi_vars.keys())
-        
+
         for var_name in all_modified_vars:
             if var_name not in self.var_alloc:
                 continue
-            
+
             alloc_type, ptr_name = self.var_alloc[var_name]
             base_type = alloc_type if '[' not in alloc_type else alloc_type.split('[')[1].split(']')[0].split(' x ')[1]
-            
+
             phi_args = []
-            
+
             if var_name in then_phi_vars:
-                phi_args.append(f"[{then_phi_vars[var_name]}, %{then_label}]")
+                phi_args.append(f"[{then_phi_vars[var_name]}, %{then_end_block}]")
             else:
-                phi_args.append(f"[{before_phi_vars[var_name]}, %{then_label}]")
-            
-            for i, elif_vars in enumerate(elif_phi_vars_list):
-                elif_label = f"if_elif_then_{if_id}_{i}"
-                if var_name in elif_vars:
-                    phi_args.append(f"[{elif_vars[var_name]}, %{elif_label}]")
-                else:
-                    phi_args.append(f"[{before_phi_vars[var_name]}, %{elif_label}]")
-            
+                phi_args.append(f"[{before_phi_vars[var_name]}, %{then_end_block}]")
+
+            if stmt.elif_parts:
+                for i, elif_vars in enumerate(elif_phi_vars_list):
+                    elif_eb = elif_end_blocks[i] if i < len(elif_end_blocks) else f"if_elif_then_{if_id}_{i}"
+                    if var_name in elif_vars:
+                        phi_args.append(f"[{elif_vars[var_name]}, %{elif_eb}]")
+                    else:
+                        phi_args.append(f"[{before_phi_vars[var_name]}, %{elif_eb}]")
+            else:
+                pass
+
             if stmt.else_body:
-                # Используем фактический последний блок из else ветки
-                actual_else_label = self.last_block_before_endif.get(str(if_id), else_label)
                 if var_name in else_phi_vars:
-                    phi_args.append(f"[{else_phi_vars[var_name]}, %{actual_else_label}]")
+                    phi_args.append(f"[{else_phi_vars[var_name]}, %{else_end_block}]")
                 else:
-                    phi_args.append(f"[{before_phi_vars[var_name]}, %{actual_else_label}]")
-            
+                    phi_args.append(f"[{before_phi_vars[var_name]}, %{else_end_block}]")
+
             if len(phi_args) > 1:
                 phi_result = self._new_local()
                 phi_args_str = ", ".join(phi_args)
                 phi_instructions.append(
                     f"  {phi_result} = phi {base_type} {phi_args_str}")
                 self.var_ssa_versions[var_name] = phi_result
-        
+
         self.code_lines.append(f"{endif_label}:")
         for phi_line in phi_instructions:
             self.code_lines.append(phi_line)
-        
+
         for var_name in all_modified_vars:
             if var_name not in self.var_alloc:
                 continue
@@ -667,7 +707,7 @@ class LLVMGenerator:
                 phi_result = self.var_ssa_versions[var_name]
                 self.code_lines.append(
                     f"  store {base_type} {phi_result}, {base_type}* {ptr_name}")
-        
+
         if self.phi_tracking:
             self.phi_tracking.pop()
 
@@ -678,10 +718,16 @@ class LLVMGenerator:
         cond_val, cond_type = self._emit_expression(stmt.condition)
         if cond_type != "i1":
             cond_bool = self._new_local()
-            self.code_lines.append(
-                f"  {cond_bool} = icmp ne {cond_type} {cond_val}, 0")
+            if cond_type == "double":
+                self.code_lines.append(
+                    f"  {cond_bool} = fcmp one double {cond_val}, 0.0")
+            else:
+                self.code_lines.append(
+                    f"  {cond_bool} = icmp ne {cond_type} {cond_val}, 0")
             cond_val = cond_bool
-        
+
+        prev_block = self.current_block
+
         before_phi_vars = {}
         for var_name in self.var_alloc:
             if var_name in self.var_ssa_versions:
@@ -693,37 +739,38 @@ class LLVMGenerator:
                 self.code_lines.append(
                     f"  {before_val} = load {base_type}, {base_type}* {ptr_name}")
                 before_phi_vars[var_name] = before_val
-        
+
         self.phi_tracking.append({})
-        
+
         self.code_lines.append(
             f"  br i1 {cond_val}, label %{then_label}, label %{endif_label}")
         self.code_lines.append(f"{then_label}:")
+        self._set_current_block(then_label)
         self._emit_statement(stmt.statement)
-        
+
         then_phi_vars = self.phi_tracking[-1].copy()
-        self.code_lines.append(f"  br label %{endif_label}")
-        
+        self._emit_br_if_not_terminated(endif_label)
+
         phi_instructions = []
         for var_name in then_phi_vars:
             if var_name not in self.var_alloc:
                 continue
-            
+
             alloc_type, ptr_name = self.var_alloc[var_name]
             base_type = alloc_type if '[' not in alloc_type else alloc_type.split('[')[1].split(']')[0].split(' x ')[1]
-            
+
             before_val = before_phi_vars[var_name]
             phi_result = self._new_local()
-            prev_label = "entry"
-            phi_args_str = f"[{before_val}, %{prev_label}], [{then_phi_vars[var_name]}, %{then_label}]"
+            phi_args_str = f"[{before_val}, %{prev_block}], [{then_phi_vars[var_name]}, %{then_label}]"
             phi_instructions.append(
                 f"  {phi_result} = phi {base_type} {phi_args_str}")
             self.var_ssa_versions[var_name] = phi_result
-        
+
         self.code_lines.append(f"{endif_label}:")
+        self._set_current_block(endif_label)
         for phi_line in phi_instructions:
             self.code_lines.append(phi_line)
-        
+
         for var_name in then_phi_vars:
             if var_name in self.var_ssa_versions:
                 alloc_type, ptr_name = self.var_alloc[var_name]
@@ -731,7 +778,7 @@ class LLVMGenerator:
                 phi_result = self.var_ssa_versions[var_name]
                 self.code_lines.append(
                     f"  store {base_type} {phi_result}, {base_type}* {ptr_name}")
-        
+
         if self.phi_tracking:
             self.phi_tracking.pop()
 
@@ -849,16 +896,16 @@ class LLVMGenerator:
                 if arg.name in self.var_alloc:
                     alloc_type, ptr_name = self.var_alloc[arg.name]
                     base_type = alloc_type if '[' not in alloc_type else alloc_type.split('[')[1].split(']')[0].split(' x ')[1]
-                    # Если это массив, нужно получить указатель на первый элемент
+
                     if '[' in alloc_type:
-                        # Массив: получаем указатель на первый элемент через getelementptr
+
                         array_ptr = self._new_local()
                         self.code_lines.append(
                             f"  {array_ptr} = getelementptr inbounds {alloc_type}, {alloc_type}* {ptr_name}, i64 0, i64 0"
                         )
                         args.append(f"{base_type}* {array_ptr}")
                     else:
-                        # Уже указатель
+
                         args.append(f"{base_type}* {ptr_name}")
                     arg_types.append(f"{base_type}*")
                 else:
@@ -876,12 +923,12 @@ class LLVMGenerator:
         if isinstance(expr, IntegerLiteral):
             return (str(expr.value), "i32")
         elif isinstance(expr, RealLiteral):
-            return (str(expr.value), "double")
+            return (self._format_double(expr.value), "double")
         elif isinstance(expr, ComplexLiteral):
             complex_val1 = self._new_local()
-            self.code_lines.append(f"  {complex_val1} = insertvalue {{double, double}} undef, double {expr.real_part}, 0")
+            self.code_lines.append(f"  {complex_val1} = insertvalue {{double, double}} undef, double {self._format_double(expr.real_part)}, 0")
             complex_val2 = self._new_local()
-            self.code_lines.append(f"  {complex_val2} = insertvalue {{double, double}} {complex_val1}, double {expr.imag_part}, 1")
+            self.code_lines.append(f"  {complex_val2} = insertvalue {{double, double}} {complex_val1}, double {self._format_double(expr.imag_part)}, 1")
             return (complex_val2, "{double, double}")
         elif isinstance(expr, StringLiteral):
             str_name, str_size = self._add_string(expr.value)
@@ -921,109 +968,39 @@ class LLVMGenerator:
             return (f"@{expr.name}", "unknown")
         elif isinstance(expr, ArrayRef):
             array_name = expr.name
-            # Проверяем, не является ли это вызовом встроенной функции
-            builtin_functions = {"SIN", "COS", "TAN", "ASIN", "ACOS", "ATAN", 
-                                "EXP", "LOG", "LOG10", "SQRT", "ABS", "INT", "FLOAT", 
+
+            builtin_functions = {"SIN", "COS", "TAN", "ASIN", "ACOS", "ATAN",
+                                "EXP", "LOG", "LOG10", "SQRT", "ABS", "INT", "FLOAT",
                                 "REAL", "MOD", "MIN", "MAX", "POW"}
-            if array_name.upper() in builtin_functions and len(expr.indices) == 0:
-                # Это вызов встроенной функции без аргументов
-                # Создаем временный FunctionCall и обрабатываем его
-                func_call = FunctionCall(name=array_name.upper(), args=[], line=expr.line, col=expr.col)
+            if array_name.upper() in builtin_functions:
+                func_call = FunctionCall(name=array_name.upper(), args=expr.indices, line=expr.line, col=expr.col)
                 return self._emit_function_call(func_call)
-            
+
+            if array_name.upper() in self.user_functions:
+                func_call = FunctionCall(name=array_name.upper(), args=expr.indices, line=expr.line, col=expr.col)
+                return self._emit_function_call(func_call)
+
             indices = [self._emit_expression(idx)[0] for idx in expr.indices]
             if array_name in self.var_alloc:
                 alloc_type, ptr = self.var_alloc[array_name]
                 base_type = alloc_type if '[' not in alloc_type else alloc_type.split(
                     '[')[1].split(']')[0].split(' x ')[1]
-                
-                # Если это указатель (параметр подпрограммы), используем простую индексацию
+
+                linear_idx = self._compute_linear_index(indices, array_name)
                 if '[' not in alloc_type:
-                    # Параметр-массив передается как указатель
-                    # Для многомерных массивов вычисляем линейный индекс
-                    if len(indices) == 1:
-                        adjusted_idx = self._new_local()
-                        self.code_lines.append(
-                            f"  {adjusted_idx} = sub i32 {indices[0]}, 1")
-                        elem_ptr = self._new_local()
-                        self.code_lines.append(
-                            f"  {elem_ptr} = getelementptr inbounds {base_type}, "
-                            f"{base_type}* {ptr}, i32 {adjusted_idx}"
-                        )
-                    else:
-                        # Многомерный массив: вычисляем линейный индекс
-                        # Для массива NxM: index = (i-1) * M + (j-1)
-                        # Используем сохраненные размеры массива
-                        array_dims = self.array_dimensions.get(array_name.upper(), [8, 8])  # По умолчанию 8x8
-                        if len(array_dims) >= 2:
-                            second_dim = array_dims[1]  # Размер второй размерности
-                        else:
-                            second_dim = 8  # По умолчанию
-                        
-                        i_adjusted = self._new_local()
-                        self.code_lines.append(
-                            f"  {i_adjusted} = sub i32 {indices[0]}, 1")
-                        j_adjusted = self._new_local()
-                        self.code_lines.append(
-                            f"  {j_adjusted} = sub i32 {indices[1]}, 1")
-                        i_mul = self._new_local()
-                        self.code_lines.append(
-                            f"  {i_mul} = mul i32 {i_adjusted}, {second_dim}")
-                        linear_idx = self._new_local()
-                        self.code_lines.append(
-                            f"  {linear_idx} = add i32 {i_mul}, {j_adjusted}")
-                        elem_ptr = self._new_local()
-                        self.code_lines.append(
-                            f"  {elem_ptr} = getelementptr inbounds {base_type}, "
-                            f"{base_type}* {ptr}, i32 {linear_idx}"
-                        )
-                    loaded = self._new_local()
+                    elem_ptr = self._new_local()
                     self.code_lines.append(
-                        f"  {loaded} = load {base_type}, {base_type}* {elem_ptr}")
-                    return (loaded, base_type)
+                        f"  {elem_ptr} = getelementptr inbounds {base_type}, "
+                        f"{base_type}* {ptr}, i32 {linear_idx}")
                 else:
-                    # Обычный массив в основной программе
-                    if len(indices) > 1:
-                        # Многомерный массив: вычисляем линейный индекс
-                        array_dims = self.array_dimensions.get(array_name.upper(), [])
-                        if len(array_dims) >= 2:
-                            second_dim = array_dims[1]
-                        else:
-                            # Если размеры не найдены, пытаемся вычислить из alloc_type
-                            total_size = int(alloc_type.split('[')[1].split(']')[0].split(' x ')[0])
-                            second_dim = int(total_size ** 0.5) if total_size > 0 else 8
-                        
-                        i_adjusted = self._new_local()
-                        self.code_lines.append(
-                            f"  {i_adjusted} = sub i32 {indices[0]}, 1")
-                        j_adjusted = self._new_local()
-                        self.code_lines.append(
-                            f"  {j_adjusted} = sub i32 {indices[1]}, 1")
-                        i_mul = self._new_local()
-                        self.code_lines.append(
-                            f"  {i_mul} = mul i32 {i_adjusted}, {second_dim}")
-                        linear_idx = self._new_local()
-                        self.code_lines.append(
-                            f"  {linear_idx} = add i32 {i_mul}, {j_adjusted}")
-                        elem_ptr = self._new_local()
-                        self.code_lines.append(
-                            f"  {elem_ptr} = getelementptr inbounds {alloc_type}, "
-                            f"{alloc_type}* {ptr}, i64 0, i32 {linear_idx}"
-                        )
-                    else:
-                        # Одномерный массив
-                        adjusted_idx = self._new_local()
-                        self.code_lines.append(
-                            f"  {adjusted_idx} = sub i32 {indices[0]}, 1")
-                        elem_ptr = self._new_local()
-                        self.code_lines.append(
-                            f"  {elem_ptr} = getelementptr inbounds {alloc_type}, "
-                            f"{alloc_type}* {ptr}, i64 0, i32 {adjusted_idx}"
-                        )
-                    loaded = self._new_local()
+                    elem_ptr = self._new_local()
                     self.code_lines.append(
-                        f"  {loaded} = load {base_type}, {base_type}* {elem_ptr}")
-                    return (loaded, base_type)
+                        f"  {elem_ptr} = getelementptr inbounds {alloc_type}, "
+                        f"{alloc_type}* {ptr}, i64 0, i32 {linear_idx}")
+                loaded = self._new_local()
+                self.code_lines.append(
+                    f"  {loaded} = load {base_type}, {base_type}* {elem_ptr}")
+                return (loaded, base_type)
             return ("0", "unknown")
         elif isinstance(expr, BinaryOp):
             return self._emit_binop(expr)
@@ -1037,8 +1014,15 @@ class LLVMGenerator:
         left_val, left_type = self._emit_expression(expr.left)
         right_val, right_type = self._emit_expression(expr.right)
         result = self._new_local()
+        cplx = "{double, double}"
         if expr.op == "+":
-            if left_type == "double" or right_type == "double":
+            if left_type == cplx or right_type == cplx:
+                if left_type != cplx:
+                    left_val = self._make_complex(left_val if left_type == "double" else self._convert_to_double(left_val), "0.0")
+                if right_type != cplx:
+                    right_val = self._make_complex(right_val if right_type == "double" else self._convert_to_double(right_val), "0.0")
+                return (self._complex_add(left_val, right_val), cplx)
+            elif left_type == "double" or right_type == "double":
                 if left_type != "double":
                     left_val = self._convert_to_double(left_val)
                 if right_type != "double":
@@ -1051,7 +1035,13 @@ class LLVMGenerator:
                     f"  {result} = add i32 {left_val}, {right_val}")
                 return (result, "i32")
         elif expr.op == "-":
-            if left_type == "double" or right_type == "double":
+            if left_type == cplx or right_type == cplx:
+                if left_type != cplx:
+                    left_val = self._make_complex(left_val if left_type == "double" else self._convert_to_double(left_val), "0.0")
+                if right_type != cplx:
+                    right_val = self._make_complex(right_val if right_type == "double" else self._convert_to_double(right_val), "0.0")
+                return (self._complex_sub(left_val, right_val), cplx)
+            elif left_type == "double" or right_type == "double":
                 if left_type != "double":
                     left_val = self._convert_to_double(left_val)
                 if right_type != "double":
@@ -1064,7 +1054,13 @@ class LLVMGenerator:
                     f"  {result} = sub i32 {left_val}, {right_val}")
                 return (result, "i32")
         elif expr.op == "*":
-            if left_type == "double" or right_type == "double":
+            if left_type == cplx or right_type == cplx:
+                if left_type != cplx:
+                    left_val = self._make_complex(left_val if left_type == "double" else self._convert_to_double(left_val), "0.0")
+                if right_type != cplx:
+                    right_val = self._make_complex(right_val if right_type == "double" else self._convert_to_double(right_val), "0.0")
+                return (self._complex_mul(left_val, right_val), cplx)
+            elif left_type == "double" or right_type == "double":
                 if left_type != "double":
                     left_val = self._convert_to_double(left_val)
                 if right_type != "double":
@@ -1077,7 +1073,13 @@ class LLVMGenerator:
                     f"  {result} = mul i32 {left_val}, {right_val}")
                 return (result, "i32")
         elif expr.op == "/":
-            if left_type == "double" or right_type == "double":
+            if left_type == cplx or right_type == cplx:
+                if left_type != cplx:
+                    left_val = self._make_complex(left_val if left_type == "double" else self._convert_to_double(left_val), "0.0")
+                if right_type != cplx:
+                    right_val = self._make_complex(right_val if right_type == "double" else self._convert_to_double(right_val), "0.0")
+                return (self._complex_div(left_val, right_val), cplx)
+            elif left_type == "double" or right_type == "double":
                 if left_type != "double":
                     left_val = self._convert_to_double(left_val)
                 if right_type != "double":
@@ -1098,12 +1100,28 @@ class LLVMGenerator:
                 f"  {result} = call double @pow(double {left_double}, double {right_double})")
             return (result, "double")
         elif expr.op in {".EQ.", "=="}:
-            self.code_lines.append(
-                f"  {result} = icmp eq {left_type} {left_val}, {right_val}")
+            if left_type == "double" or right_type == "double":
+                if left_type != "double":
+                    left_val = self._convert_to_double(left_val)
+                if right_type != "double":
+                    right_val = self._convert_to_double(right_val)
+                self.code_lines.append(
+                    f"  {result} = fcmp oeq double {left_val}, {right_val}")
+            else:
+                self.code_lines.append(
+                    f"  {result} = icmp eq {left_type} {left_val}, {right_val}")
             return (result, "i1")
         elif expr.op in {".NE.", "/="}:
-            self.code_lines.append(
-                f"  {result} = icmp ne {left_type} {left_val}, {right_val}")
+            if left_type == "double" or right_type == "double":
+                if left_type != "double":
+                    left_val = self._convert_to_double(left_val)
+                if right_type != "double":
+                    right_val = self._convert_to_double(right_val)
+                self.code_lines.append(
+                    f"  {result} = fcmp one double {left_val}, {right_val}")
+            else:
+                self.code_lines.append(
+                    f"  {result} = icmp ne {left_type} {left_val}, {right_val}")
             return (result, "i1")
         elif expr.op in {".LT.", "<"}:
             if left_type == "double" or right_type == "double":
@@ -1220,7 +1238,14 @@ class LLVMGenerator:
         val, val_type = self._emit_expression(expr.operand)
         result = self._new_local()
         if expr.op == "-":
-            if val_type == "double":
+            if val_type == "{double, double}":
+                re_part, im_part = self._extract_complex_parts(val)
+                neg_re = self._new_local()
+                self.code_lines.append(f"  {neg_re} = fneg double {re_part}")
+                neg_im = self._new_local()
+                self.code_lines.append(f"  {neg_im} = fneg double {im_part}")
+                return (self._make_complex(neg_re, neg_im), val_type)
+            elif val_type == "double":
                 self.code_lines.append(f"  {result} = fneg double {val}")
             else:
                 self.code_lines.append(f"  {result} = sub i32 0, {val}")
@@ -1301,22 +1326,147 @@ class LLVMGenerator:
                 f"  {result} = select i1 {cmp_result}, i32 {left_val}, i32 {right_val}")
             return (result, "i32")
         else:
-            args = [self._emit_expression(arg)[0] for arg in expr.args]
-            args_str = ", ".join(args)
-            self.code_lines.append(
-                f"  {result} = call double @{func_name.lower()}({args_str})")
-            return (result, "double")
+            if func_name in self.user_functions:
+                ret_type, param_types = self.user_functions[func_name]
+                arg_parts = []
+                for i, arg in enumerate(expr.args):
+                    expected_type = param_types[i] if i < len(param_types) else 'i32'
+                    arg_val, arg_type = self._emit_expression(arg)
+                    if expected_type == 'double' and arg_type == 'i32':
+                        arg_val = self._convert_to_double(arg_val)
+                        arg_type = 'double'
+                    elif expected_type == 'i32' and arg_type == 'double':
+                        conv = self._new_local()
+                        self.code_lines.append(f"  {conv} = fptosi double {arg_val} to i32")
+                        arg_val = conv
+                        arg_type = 'i32'
+                    tmp_ptr = self._new_local()
+                    self.code_lines.append(f"  {tmp_ptr} = alloca {expected_type}")
+                    self.code_lines.append(f"  store {expected_type} {arg_val}, {expected_type}* {tmp_ptr}")
+                    arg_parts.append(f"{expected_type}* {tmp_ptr}")
+                args_str = ", ".join(arg_parts)
+                self.code_lines.append(
+                    f"  {result} = call {ret_type} @{func_name}({args_str})")
+                return (result, ret_type)
+            else:
+                args = [self._emit_expression(arg)[0] for arg in expr.args]
+                args_str = ", ".join(args)
+                self.code_lines.append(
+                    f"  {result} = call double @{func_name.lower()}({args_str})")
+                return (result, "double")
 
     def _convert_to_double(self, val: str) -> str:
         result = self._new_local()
         self.code_lines.append(f"  {result} = sitofp i32 {val} to double")
         return result
 
+    def _extract_complex_parts(self, val: str) -> Tuple[str, str]:
+        re_part = self._new_local()
+        self.code_lines.append(f"  {re_part} = extractvalue {{double, double}} {val}, 0")
+        im_part = self._new_local()
+        self.code_lines.append(f"  {im_part} = extractvalue {{double, double}} {val}, 1")
+        return (re_part, im_part)
+
+    def _make_complex(self, re_val: str, im_val: str) -> str:
+        tmp = self._new_local()
+        self.code_lines.append(f"  {tmp} = insertvalue {{double, double}} undef, double {re_val}, 0")
+        result = self._new_local()
+        self.code_lines.append(f"  {result} = insertvalue {{double, double}} {tmp}, double {im_val}, 1")
+        return result
+
+    def _complex_add(self, left: str, right: str) -> str:
+        a, b = self._extract_complex_parts(left)
+        c, d = self._extract_complex_parts(right)
+        re = self._new_local()
+        self.code_lines.append(f"  {re} = fadd double {a}, {c}")
+        im = self._new_local()
+        self.code_lines.append(f"  {im} = fadd double {b}, {d}")
+        return self._make_complex(re, im)
+
+    def _complex_sub(self, left: str, right: str) -> str:
+        a, b = self._extract_complex_parts(left)
+        c, d = self._extract_complex_parts(right)
+        re = self._new_local()
+        self.code_lines.append(f"  {re} = fsub double {a}, {c}")
+        im = self._new_local()
+        self.code_lines.append(f"  {im} = fsub double {b}, {d}")
+        return self._make_complex(re, im)
+
+    def _complex_mul(self, left: str, right: str) -> str:
+        a, b = self._extract_complex_parts(left)
+        c, d = self._extract_complex_parts(right)
+        ac = self._new_local()
+        self.code_lines.append(f"  {ac} = fmul double {a}, {c}")
+        bd = self._new_local()
+        self.code_lines.append(f"  {bd} = fmul double {b}, {d}")
+        ad = self._new_local()
+        self.code_lines.append(f"  {ad} = fmul double {a}, {d}")
+        bc = self._new_local()
+        self.code_lines.append(f"  {bc} = fmul double {b}, {c}")
+        re = self._new_local()
+        self.code_lines.append(f"  {re} = fsub double {ac}, {bd}")
+        im = self._new_local()
+        self.code_lines.append(f"  {im} = fadd double {ad}, {bc}")
+        return self._make_complex(re, im)
+
+    def _complex_div(self, left: str, right: str) -> str:
+        a, b = self._extract_complex_parts(left)
+        c, d = self._extract_complex_parts(right)
+        cc = self._new_local()
+        self.code_lines.append(f"  {cc} = fmul double {c}, {c}")
+        dd = self._new_local()
+        self.code_lines.append(f"  {dd} = fmul double {d}, {d}")
+        denom = self._new_local()
+        self.code_lines.append(f"  {denom} = fadd double {cc}, {dd}")
+        ac = self._new_local()
+        self.code_lines.append(f"  {ac} = fmul double {a}, {c}")
+        bd = self._new_local()
+        self.code_lines.append(f"  {bd} = fmul double {b}, {d}")
+        bc = self._new_local()
+        self.code_lines.append(f"  {bc} = fmul double {b}, {c}")
+        ad = self._new_local()
+        self.code_lines.append(f"  {ad} = fmul double {a}, {d}")
+        re_num = self._new_local()
+        self.code_lines.append(f"  {re_num} = fadd double {ac}, {bd}")
+        im_num = self._new_local()
+        self.code_lines.append(f"  {im_num} = fsub double {bc}, {ad}")
+        re = self._new_local()
+        self.code_lines.append(f"  {re} = fdiv double {re_num}, {denom}")
+        im = self._new_local()
+        self.code_lines.append(f"  {im} = fdiv double {im_num}, {denom}")
+        return self._make_complex(re, im)
+
+    def _compute_linear_index(self, indices_vals, array_name):
+        array_dims = self.array_dimensions.get(array_name.upper(), [])
+        if len(indices_vals) == 1:
+            adjusted = self._new_local()
+            self.code_lines.append(f"  {adjusted} = sub i32 {indices_vals[0]}, 1")
+            return adjusted
+        if not array_dims:
+            array_dims = [8] * len(indices_vals)
+        while len(array_dims) < len(indices_vals):
+            array_dims.append(8)
+        adj_first = self._new_local()
+        self.code_lines.append(f"  {adj_first} = sub i32 {indices_vals[0]}, 1")
+        linear = adj_first
+        for k in range(1, len(indices_vals)):
+            dim_k = array_dims[k]
+            mul_tmp = self._new_local()
+            self.code_lines.append(f"  {mul_tmp} = mul i32 {linear}, {dim_k}")
+            adj_k = self._new_local()
+            self.code_lines.append(f"  {adj_k} = sub i32 {indices_vals[k]}, 1")
+            linear = self._new_local()
+            self.code_lines.append(f"  {linear} = add i32 {mul_tmp}, {adj_k}")
+        return linear
+
     def _convert_to_bool(self, val: str, val_type: str) -> str:
         if val_type == "i1":
             return val
         result = self._new_local()
-        self.code_lines.append(f"  {result} = icmp ne {val_type} {val}, 0")
+        if val_type == "double":
+            self.code_lines.append(f"  {result} = fcmp one double {val}, 0.0")
+        else:
+            self.code_lines.append(f"  {result} = icmp ne {val_type} {val}, 0")
         return result
 
     def _add_string(self, string_val: str) -> Tuple[str, int]:
@@ -1344,6 +1494,34 @@ class LLVMGenerator:
         self.block_counter += 1
         return self.block_counter
 
+    def _is_block_terminated(self) -> bool:
+        for i in range(len(self.code_lines) - 1, -1, -1):
+            line = self.code_lines[i].strip()
+            if not line:
+                continue
+            if line.endswith(':'):
+                return False
+            if line.startswith('br ') or line.startswith('ret '):
+                return True
+            return False
+        return False
+
+    def _emit_br_if_not_terminated(self, target_label: str):
+        if not self._is_block_terminated():
+            self.code_lines.append(f"  br label %{target_label}")
+
+    def _set_current_block(self, block_name: str):
+        self.current_block = block_name
+
+    @staticmethod
+    def _format_double(value) -> str:
+        s = str(value)
+        if 'e' in s.lower() or 'E' in s:
+            s = f"{value:.15f}"
+        if '.' not in s:
+            s += '.0'
+        return s
+
     def _emit_return_statement(self, stmt: ReturnStatement):
         if self.current_function == "main":
             self.code_lines.append("  ret i32 0")
@@ -1357,6 +1535,24 @@ class LLVMGenerator:
             else:
                 self.code_lines.append("  ret void")
 
+    def _emit_arithmetic_if(self, stmt: ArithmeticIfStatement):
+        val, val_type = self._emit_expression(stmt.condition)
+        if val_type == "double":
+            cmp_neg = self._new_local()
+            self.code_lines.append(f"  {cmp_neg} = fcmp olt double {val}, 0.0")
+            cmp_zero = self._new_local()
+            self.code_lines.append(f"  {cmp_zero} = fcmp oeq double {val}, 0.0")
+        else:
+            cmp_neg = self._new_local()
+            self.code_lines.append(f"  {cmp_neg} = icmp slt i32 {val}, 0")
+            cmp_zero = self._new_local()
+            self.code_lines.append(f"  {cmp_zero} = icmp eq i32 {val}, 0")
+        arif_id = self._new_block_id()
+        check_zero_label = f"arif_checkzero_{arif_id}"
+        self.code_lines.append(f"  br i1 {cmp_neg}, label %label_{stmt.label_neg}, label %{check_zero_label}")
+        self.code_lines.append(f"{check_zero_label}:")
+        self.code_lines.append(f"  br i1 {cmp_zero}, label %label_{stmt.label_zero}, label %label_{stmt.label_pos}")
+
     def _emit_goto_statement(self, stmt: GotoStatement):
         label_name = f"label_{stmt.label}"
         self.code_lines.append(f"  br label %{label_name}")
@@ -1364,42 +1560,43 @@ class LLVMGenerator:
     def _emit_continue_statement(self, stmt: ContinueStatement):
         if stmt.label:
             label_name = f"label_{stmt.label}"
-            self.code_lines.append(f"  br label %{label_name}")
+            self._emit_br_if_not_terminated(label_name)
             self.code_lines.append(f"{label_name}:")
+            self._set_current_block(label_name)
 
     def _emit_subroutine(self, sub: Subroutine):
         old_function = self.current_function
         old_var_alloc = self.var_alloc.copy()
         old_local_counter = self.local_counter
         old_block_counter = self.block_counter
-        
+
         self.current_function = sub.name.upper()
         self.var_alloc = {}
         self.local_counter = 0
         self.block_counter = 0
         self.var_ssa_versions = {}
         self.phi_tracking = []
-        self.current_subroutine_params = sub.params  # Сохраняем параметры для использования в _emit_declarations
-        
-        # Сначала обрабатываем объявления, чтобы определить типы параметров
+        self.current_subroutine_params = sub.params
+
+
         temp_var_alloc = {}
         temp_code_lines = []
         old_code_lines = self.code_lines
         self.code_lines = temp_code_lines
         self.var_alloc = temp_var_alloc
-        
-        # Обрабатываем объявления для определения типов параметров
+
+
         for decl in sub.declarations:
             if isinstance(decl, Declaration):
                 llvm_type = self.type_map.get(decl.type, 'i32')
                 for name, dims in decl.names:
                     param_upper = name.upper()
                     if param_upper in [p.upper() for p in sub.params]:
-                        # Это параметр подпрограммы
+
                         if dims:
-                            # Массив - передается как указатель
+
                             temp_var_alloc[param_upper] = (llvm_type, f"%param_{name}")
-                            # Сохраняем размеры массива для правильной индексации
+
                             dim_sizes = []
                             for d in dims:
                                 if isinstance(d, tuple):
@@ -1410,20 +1607,20 @@ class LLVMGenerator:
                                     dim_sizes.append(d)
                             self.array_dimensions[param_upper] = dim_sizes
                         else:
-                            # Скаляр - передается как указатель
+
                             temp_var_alloc[param_upper] = (llvm_type, f"%param_{name}")
-        
-        # Восстанавливаем состояние
+
+
         self.code_lines = old_code_lines
         self.var_alloc = {}
-        
-        # Генерируем сигнатуру подпрограммы с правильными типами
+
+
         param_list = []
         param_types = {}
         for param in sub.params:
             param_upper = param.upper()
-            # Проверяем тип параметра из объявлений
-            param_type = "i32"  # По умолчанию
+
+            param_type = "i32"
             for decl in sub.declarations:
                 if isinstance(decl, Declaration):
                     for name, dims in decl.names:
@@ -1434,27 +1631,28 @@ class LLVMGenerator:
                         break
             param_list.append(f"{param_type}* %param_{param}")
             param_types[param_upper] = param_type
-        
+
         self.code_lines.append(f"; === Подпрограмма {sub.name} ===")
         self.code_lines.append(f"define void @{sub.name.upper()}({', '.join(param_list)}) #0 {{")
         self.code_lines.append("entry:")
-        
+        self._set_current_block("entry")
+
         for param in sub.params:
             param_upper = param.upper()
             param_type = param_types[param_upper]
             self.var_alloc[param_upper] = (param_type, f"%param_{param}")
-        
+
         self._emit_declarations(sub.declarations)
-        
+
         for stmt in sub.statements:
             self._emit_statement(stmt)
-        
+
         if not any(isinstance(s, ReturnStatement) for s in sub.statements):
             self.code_lines.append("  ret void")
-        
+
         self.code_lines.append("}")
         self.code_lines.append("")
-        
+
         self.current_function = old_function
         self.var_alloc = old_var_alloc
         self.local_counter = old_local_counter
@@ -1466,7 +1664,7 @@ class LLVMGenerator:
         old_var_alloc = self.var_alloc.copy()
         old_local_counter = self.local_counter
         old_block_counter = self.block_counter
-        
+
         func_name_upper = func.name.upper()
         self.current_function = func_name_upper
         self.var_alloc = {}
@@ -1474,47 +1672,52 @@ class LLVMGenerator:
         self.block_counter = 0
         self.var_ssa_versions = {}
         self.phi_tracking = []
-        
+
         return_type = "i32"
         if func.return_type:
             type_map = {'INTEGER': 'i32', 'REAL': 'double', 'LOGICAL': 'i1'}
             return_type = type_map.get(func.return_type.upper(), 'i32')
-        
+
+        param_type_map = {}
+        for decl in func.declarations:
+            if hasattr(decl, 'names') and hasattr(decl, 'type'):
+                llvm_t = self.type_map.get(decl.type, 'i32')
+                for pname, _ in decl.names:
+                    param_type_map[pname.upper()] = llvm_t
+
         param_list = []
         param_types = {}
         for param in func.params:
-            param_type = "i32"
-            param_list.append(f"{param_type} %param_{param}")
+            param_type = param_type_map.get(param.upper(), "i32")
+            param_list.append(f"{param_type}* %param_{param}")
             param_types[param.upper()] = param_type
-        
+
         self.code_lines.append(f"; === Функция {func.name} ===")
         self.code_lines.append(f"define {return_type} @{func_name_upper}({', '.join(param_list)}) #0 {{")
         self.code_lines.append("entry:")
-        
+        self._set_current_block("entry")
+
         result_ptr = f"%{func_name_upper}"
         self.code_lines.append(f"  {result_ptr} = alloca {return_type}")
         self.var_alloc[func_name_upper] = (return_type, result_ptr)
-        
+
         for param in func.params:
             param_upper = param.upper()
             param_type = param_types[param_upper]
-            local_name = f"%{param_upper}"
-            self.code_lines.append(f"  {local_name} = alloca {param_type}")
-            self.code_lines.append(f"  store {param_type} %param_{param}, {param_type}* {local_name}")
-            self.var_alloc[param_upper] = (param_type, local_name)
-        
+            self.var_alloc[param_upper] = (param_type, f"%param_{param}")
+
         self._emit_declarations(func.declarations)
-        
+
         for stmt in func.statements:
             self._emit_statement(stmt)
-        
+
         result = self._new_local()
         self.code_lines.append(f"  {result} = load {return_type}, {return_type}* {result_ptr}")
         self.code_lines.append(f"  ret {return_type} {result}")
-        
+
         self.code_lines.append("}")
         self.code_lines.append("")
-        
+
         self.current_function = old_function
         self.var_alloc = old_var_alloc
         self.local_counter = old_local_counter

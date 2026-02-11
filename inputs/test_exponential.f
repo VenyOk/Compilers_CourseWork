@@ -6,4 +6,3 @@
       Z = X + Y
       PRINT *, Z
       END
-
