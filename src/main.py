@@ -6,7 +6,8 @@ from src.ssa_generator import SSAGenerator
 from src.llvm_generator import LLVMGenerator
 
 
-def analyze_file(file_path: str, ssa_output: str = None, llvm_output: str = None, show_ast: bool = False) -> int:
+def analyze_file(file_path: str, ssa_output: str = None, llvm_output: str = None,
+                 show_ast: bool = False, opt_level: int = 0) -> int:
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             code = f.read()
@@ -56,6 +57,19 @@ def analyze_file(file_path: str, ssa_output: str = None, llvm_output: str = None
             print("[OK] Семантический анализ завершен успешно, но есть предупреждения.")
         else:
             print("[ОШИБКА] Семантический анализ выявил ошибки.")
+        if success and opt_level > 0:
+            try:
+                from src.optimizations.pipeline import OptimizationPipeline
+                pipeline = OptimizationPipeline(level=opt_level)
+                ast = pipeline.run(ast)
+                report = pipeline.report()
+                print(f"[OK] Оптимизации (O{opt_level}):")
+                print(report)
+            except Exception as e:
+                print(f"Предупреждение: ошибка при оптимизации: {e}", file=sys.stderr)
+                import traceback
+                traceback.print_exc()
+
         if success:
             if ssa_output:
                 try:
@@ -121,11 +135,19 @@ def main():
         action='store_true',
         help='Выводить AST дерево'
     )
+    parser.add_argument(
+        '-O',
+        dest='opt_level',
+        type=int,
+        default=0,
+        choices=[0, 1, 2, 3],
+        help='Уровень оптимизации: 0=нет, 1=базовые, 2=+LICM/CSE/тайлинг, 3=+скашивание'
+    )
     args = parser.parse_args()
     if not args.file.endswith('.f'):
         print(
             f"Предупреждение: файл '{args.file}' не имеет расширения .f", file=sys.stderr)
-    return analyze_file(args.file, args.ssa_output, args.llvm_output, args.show_ast)
+    return analyze_file(args.file, args.ssa_output, args.llvm_output, args.show_ast, args.opt_level)
 
 
 if __name__ == '__main__':
