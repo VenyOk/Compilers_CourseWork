@@ -1,0 +1,74 @@
+[
+  {
+    "file": "bench_const_fold.f",
+    "label": "Constant Folding",
+    "times": {
+      "O0": 2.9599999834317714e-05,
+      "O1": 2.4000000848900527e-06,
+      "O2": 3.7000027077738196e-06
+    }
+  },
+  {
+    "file": "bench_const_prop.f",
+    "label": "Constant Propagation",
+    "times": {
+      "O0": 9.700001101009548e-06,
+      "O1": 2.4000000848900527e-06,
+      "O2": 2.4000000848900527e-06
+    }
+  },
+  {
+    "file": "bench_licm.f",
+    "label": "LICM",
+    "times": {
+      "O0": 5.909999890718609e-05,
+      "O1": 2.2500000341096893e-05,
+      "O2": 2.090000270982273e-05
+    }
+  },
+  {
+    "file": "bench_cse.f",
+    "label": "CSE",
+    "times": {
+      "O0": 4.4200001866556704e-05,
+      "O1": 1.0700001439545304e-05,
+      "O2": 1.1599997378652915e-05
+    }
+  },
+  {
+    "file": "bench_dead_code.f",
+    "label": "Dead Code Elim",
+    "times": {
+      "O0": 7.300001016119495e-06,
+      "O1": 3.1000017770566046e-06,
+      "O2": null
+    }
+  },
+  {
+    "file": "bench_strength_red.f",
+    "label": "Strength Reduction",
+    "times": {
+      "O0": 3.079999805777334e-05,
+      "O1": 4.5000015234109014e-06,
+      "O2": null
+    }
+  },
+  {
+    "file": "bench_combined.f",
+    "label": "Combined (O1)",
+    "times": {
+      "O0": 3.6000019463244826e-06,
+      "O1": 3.0000010156072676e-06,
+      "O2": 2.1000014385208488e-06
+    }
+  },
+  {
+    "file": "bench_stencil_2d.f",
+    "label": "2D Stencil (tiling)",
+    "times": {
+      "O0": 0.00015699999858043157,
+      "O1": 0.00015690000145696104,
+      "O2": null
+    }
+  }
+]
