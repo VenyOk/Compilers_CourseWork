@@ -74,6 +74,13 @@ EXPECTED_OUTPUTS = {
     "test_complex_arithmetic.f": "(4, 2)\n(2, 6)\n(11, -2)\n(-3, -4)\n(8, 4)\n(-1, 0)\n",
     "test_double_precision.f": "3.14159\n11.1111\n1e-012\n0.333333\n5.18738\n1.41421\n1024\n",
     "test_func_const_arg.f": "10\n12\n23\n",
+    "bench_const_fold.f": "80000\n44140\n",
+    "bench_const_prop.f": "300000\n28769.4\n",
+    "bench_dead_code.f": "500500\n500.5\n",
+    "bench_cse.f": "9919.4\n19838.8\n3306.47\n35074.4\n",
+    "bench_strength_red.f": "1001000\n2002000\n4004000\n3.33834e+008\n1.001e+006\n",
+    "bench_licm.f": "1.30631e+007\n2.74909e+006\n508654\n",
+    "bench_combined.f": "467181\n",
 }
 
 
