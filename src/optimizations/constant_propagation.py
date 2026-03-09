@@ -76,11 +76,18 @@ class ConstantPropagation(ASTOptimizationPass):
             new_start = self._subst_expr(stmt.start, env)
             new_end = self._subst_expr(stmt.end, env)
             new_step = self._subst_expr(stmt.step, env) if stmt.step else stmt.step
-            # В теле цикла переменная цикла может меняться — убираем из env
-            loop_env = {k: v for k, v in env.items() if k != stmt.var}
+            # Убираем из env все переменные, которые могут меняться внутри тела цикла.
+            # Консервативно но корректно: не пропускаем значения «до цикла» внутрь
+            # тела, если они там перезаписываются; и не сохраняем их «после цикла».
+            written_in_loop = _vars_written_in(stmt)
+            loop_env = {k: v for k, v in env.items()
+                        if k != stmt.var and k not in written_in_loop}
             new_body = self._propagate_stmts(stmt.body, loop_env)
+            # После цикла: убираем все переменные, изменённые внутри цикла
+            outer_env_after = {k: v for k, v in env.items()
+                               if k not in written_in_loop}
             return dc_replace(stmt, start=new_start, end=new_end,
-                               step=new_step, body=new_body), env
+                               step=new_step, body=new_body), outer_env_after
 
         elif isinstance(stmt, (DoWhile, LabeledDoWhile)):
             new_cond = self._subst_expr(stmt.condition, env)

@@ -90,6 +90,8 @@ def analyze_file(file_path: str, ssa_output: str = None, llvm_output: str = None
                         f.write(llvm_code)
                     print(f"[OK] LLVM IR записан в '{llvm_output}'")
                 except Exception as e:
+                    import traceback
+                    traceback.print_exc()
                     print(
                         f"Ошибка при генерации LLVM IR: {e}", file=sys.stderr)
                     return 1

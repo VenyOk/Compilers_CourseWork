@@ -30,17 +30,33 @@ BENCH_FILES = [
     "inputs/bench_strength_red.f",
     "inputs/bench_combined.f",
     "inputs/bench_stencil_2d.f",
+    "inputs/bench_heavy_fold.f",
+    "inputs/bench_heavy_licm.f",
+    "inputs/bench_heavy_strength.f",
+    "inputs/bench_heavy_sum.f",
+    "inputs/bench_heavy_power.f",
+    "inputs/bench_heavy_pi.f",
+    "inputs/bench_heavy_combined.f",
+    "inputs/bench_heavy_allopt.f",
 ]
 
 BENCH_LABELS = {
-    "bench_const_fold.f":   "Constant Folding",
-    "bench_const_prop.f":   "Constant Propagation",
-    "bench_licm.f":         "LICM",
-    "bench_cse.f":          "CSE",
-    "bench_dead_code.f":    "Dead Code Elim",
-    "bench_strength_red.f": "Strength Reduction",
-    "bench_combined.f":     "Combined (O1)",
-    "bench_stencil_2d.f":   "2D Stencil (tiling)",
+    "bench_const_fold.f":      "Const Folding",
+    "bench_const_prop.f":      "Const Propagation",
+    "bench_licm.f":            "LICM",
+    "bench_cse.f":             "CSE",
+    "bench_dead_code.f":       "Dead Code Elim",
+    "bench_strength_red.f":    "Strength Reduction",
+    "bench_combined.f":        "Combined O1",
+    "bench_stencil_2d.f":      "2D Stencil (tiling)",
+    "bench_heavy_fold.f":      "[Heavy] Const Folding",
+    "bench_heavy_licm.f":      "[Heavy] LICM",
+    "bench_heavy_strength.f":  "[Heavy] Strength Red",
+    "bench_heavy_sum.f":       "[Heavy] Sum",
+    "bench_heavy_power.f":     "[Heavy] Power",
+    "bench_heavy_pi.f":        "[Heavy] Pi",
+    "bench_heavy_combined.f":  "[Heavy] Combined",
+    "bench_heavy_allopt.f":    "[Heavy] All Opts",
 }
 
 REPEAT = 3  # повторений для усреднения
@@ -100,58 +116,31 @@ def _init_llvm():
 
 
 def run_ll(ll_path: str) -> Optional[float]:
-    """JIT-исполнить .ll файл, вернуть время выполнения в секундах."""
-    try:
-        import llvmlite.binding as llvm
-        import ctypes
-        import os
-
-        _init_llvm()
-
-        with open(ll_path) as f:
-            ll_code = f.read()
-
-        target = llvm.Target.from_default_triple()
-        target_machine = target.create_target_machine()
-
-        mod = llvm.parse_assembly(ll_code)
-        mod.verify()
-
-        backing_mod = llvm.parse_assembly("")
-        engine = llvm.create_mcjit_compiler(backing_mod, target_machine)
-        engine.add_module(mod)
-        engine.finalize_object()
-        engine.run_static_constructors()
-
-        fn_addr = engine.get_function_address("main")
-        if not fn_addr:
+    """JIT-исполнить .ll файл через subprocess, вернуть медианное время (сек)."""
+    import subprocess
+    runner = str(ROOT / "test_llvmlite_run.py")
+    times = []
+    for _ in range(REPEAT):
+        try:
+            r = subprocess.run(
+                [sys.executable, runner, ll_path],
+                capture_output=True, text=True, timeout=30,
+            )
+            if r.returncode != 0:
+                return None
+            # test_llvmlite_run.py prints "[Time: X.XXX ms]" at the end
+            for line in r.stderr.splitlines() + r.stdout.splitlines():
+                if line.startswith("[Time:"):
+                    ms = float(line.split()[1])
+                    times.append(ms / 1000.0)
+                    break
+            else:
+                return None
+        except Exception:
             return None
-
-        fn_ptr = ctypes.CFUNCTYPE(ctypes.c_int)(fn_addr)
-
-        # Прогревочный запуск
-        fn_ptr()
-
-        # Подавить вывод при измерении
-        old_stdout = os.dup(1)
-        devnull = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(devnull, 1)
-
-        times = []
-        for _ in range(REPEAT):
-            t0 = time.perf_counter()
-            fn_ptr()
-            times.append(time.perf_counter() - t0)
-
-        os.dup2(old_stdout, 1)
-        os.close(devnull)
-        os.close(old_stdout)
-
-        engine.run_static_destructors()
-        return sorted(times)[len(times) // 2]  # медиана
-
-    except Exception:
+    if not times:
         return None
+    return sorted(times)[len(times) // 2]
 
 
 def benchmark_file(fortran_file: str, levels: List[int]) -> Dict:

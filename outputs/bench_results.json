@@ -1,74 +1,146 @@
 [
   {
     "file": "bench_const_fold.f",
-    "label": "Constant Folding",
+    "label": "Const Folding",
     "times": {
-      "O0": 2.9599999834317714e-05,
-      "O1": 2.4000000848900527e-06,
-      "O2": 3.7000027077738196e-06
+      "O0": 5.1e-05,
+      "O1": 2.3e-05,
+      "O2": 2.4e-05
     }
   },
   {
     "file": "bench_const_prop.f",
-    "label": "Constant Propagation",
+    "label": "Const Propagation",
     "times": {
-      "O0": 9.700001101009548e-06,
-      "O1": 2.4000000848900527e-06,
-      "O2": 2.4000000848900527e-06
+      "O0": 2.6e-05,
+      "O1": 2.6e-05,
+      "O2": 2.6e-05
     }
   },
   {
     "file": "bench_licm.f",
     "label": "LICM",
     "times": {
-      "O0": 5.909999890718609e-05,
-      "O1": 2.2500000341096893e-05,
-      "O2": 2.090000270982273e-05
+      "O0": 8e-05,
+      "O1": 7.8e-05,
+      "O2": 8.2e-05
     }
   },
   {
     "file": "bench_cse.f",
     "label": "CSE",
     "times": {
-      "O0": 4.4200001866556704e-05,
-      "O1": 1.0700001439545304e-05,
-      "O2": 1.1599997378652915e-05
+      "O0": 6.2e-05,
+      "O1": 6.2e-05,
+      "O2": 6.500000000000001e-05
     }
   },
   {
     "file": "bench_dead_code.f",
     "label": "Dead Code Elim",
     "times": {
-      "O0": 7.300001016119495e-06,
-      "O1": 3.1000017770566046e-06,
-      "O2": null
+      "O0": 2.5e-05,
+      "O1": 2.5e-05,
+      "O2": 2.4e-05
     }
   },
   {
     "file": "bench_strength_red.f",
     "label": "Strength Reduction",
     "times": {
-      "O0": 3.079999805777334e-05,
-      "O1": 4.5000015234109014e-06,
-      "O2": null
+      "O0": 0.000106,
+      "O1": 2.6e-05,
+      "O2": 2.8e-05
     }
   },
   {
     "file": "bench_combined.f",
-    "label": "Combined (O1)",
+    "label": "Combined O1",
     "times": {
-      "O0": 3.6000019463244826e-06,
-      "O1": 3.0000010156072676e-06,
-      "O2": 2.1000014385208488e-06
+      "O0": 2e-05,
+      "O1": 2e-05,
+      "O2": 2.1000000000000002e-05
     }
   },
   {
     "file": "bench_stencil_2d.f",
     "label": "2D Stencil (tiling)",
     "times": {
-      "O0": 0.00015699999858043157,
-      "O1": 0.00015690000145696104,
-      "O2": null
+      "O0": 0.000179,
+      "O1": 0.000185,
+      "O2": 0.000214
+    }
+  },
+  {
+    "file": "bench_heavy_fold.f",
+    "label": "[Heavy] Const Folding",
+    "times": {
+      "O0": 0.047929,
+      "O1": 0.047779,
+      "O2": 0.053295999999999996
+    }
+  },
+  {
+    "file": "bench_heavy_licm.f",
+    "label": "[Heavy] LICM",
+    "times": {
+      "O0": 0.057321,
+      "O1": 0.05732,
+      "O2": 0.061086
+    }
+  },
+  {
+    "file": "bench_heavy_strength.f",
+    "label": "[Heavy] Strength Red",
+    "times": {
+      "O0": 0.528284,
+      "O1": 0.047779,
+      "O2": 0.05095
+    }
+  },
+  {
+    "file": "bench_heavy_sum.f",
+    "label": "[Heavy] Sum",
+    "times": {
+      "O0": 0.143313,
+      "O1": 0.143354,
+      "O2": 0.147501
+    }
+  },
+  {
+    "file": "bench_heavy_power.f",
+    "label": "[Heavy] Power",
+    "times": {
+      "O0": 0.527261,
+      "O1": 0.030457,
+      "O2": 0.029933
+    }
+  },
+  {
+    "file": "bench_heavy_pi.f",
+    "label": "[Heavy] Pi",
+    "times": {
+      "O0": 0.020113,
+      "O1": 0.020094,
+      "O2": 0.020475999999999998
+    }
+  },
+  {
+    "file": "bench_heavy_combined.f",
+    "label": "[Heavy] Combined",
+    "times": {
+      "O0": 0.143401,
+      "O1": 0.143285,
+      "O2": 0.149906
+    }
+  },
+  {
+    "file": "bench_heavy_allopt.f",
+    "label": "[Heavy] All Opts",
+    "times": {
+      "O0": 0.48288,
+      "O1": 0.054186,
+      "O2": 0.054462
     }
   }
 ]

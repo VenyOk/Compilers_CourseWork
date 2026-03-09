@@ -23,7 +23,7 @@ def main():
         idx = sys.argv.index('--bench')
         bench_runs = int(sys.argv[idx + 1]) if idx + 1 < len(sys.argv) else 50
 
-    with open(ll_path, 'r', encoding='utf-8') as f:
+    with open(ll_path, 'r') as f:
         ir_code = f.read()
 
     mod = llvm.parse_assembly(ir_code)
