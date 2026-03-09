@@ -13,15 +13,15 @@ def buildPasses(level: int) -> List[Type[ASTOptimizationPass]]:
         return []
     if level == 2:
         return [
-            CommonSubexpressionElimination,
             LoopInvariantCodeMotion,
+            CommonSubexpressionElimination,
             LoopInterchange,
             LoopTiling,
         ]
     if level == 3:
         return [
-            CommonSubexpressionElimination,
             LoopInvariantCodeMotion,
+            CommonSubexpressionElimination,
             LoopInterchange,
             LoopSkewing,
             LoopTiling,

@@ -1,65 +1,29 @@
 [
   {
-    "file": "bench_const_fold.f",
-    "label": "Const Folding",
+    "file": "bench_lcinv.f",
+    "label": "LICM: SQRT invariant",
     "times": {
-      "O0": 5.1e-05,
-      "O1": 2.3e-05,
-      "O2": 2.4e-05
+      "O0": 0.032151000000000006,
+      "O2": 0.025317,
+      "O3": 0.02537
     }
   },
   {
-    "file": "bench_const_prop.f",
-    "label": "Const Propagation",
+    "file": "bench_csesin.f",
+    "label": "CSE: SIN/COS repeated",
     "times": {
-      "O0": 2.6e-05,
-      "O1": 2.6e-05,
-      "O2": 2.6e-05
+      "O0": 0.051197,
+      "O2": 0.019072,
+      "O3": 0.019099
     }
   },
   {
-    "file": "bench_licm.f",
-    "label": "LICM",
+    "file": "bench_matmul.f",
+    "label": "Matmul 100x100 (interchange+tile)",
     "times": {
-      "O0": 8e-05,
-      "O1": 7.8e-05,
-      "O2": 8.2e-05
-    }
-  },
-  {
-    "file": "bench_cse.f",
-    "label": "CSE",
-    "times": {
-      "O0": 6.2e-05,
-      "O1": 6.2e-05,
-      "O2": 6.500000000000001e-05
-    }
-  },
-  {
-    "file": "bench_dead_code.f",
-    "label": "Dead Code Elim",
-    "times": {
-      "O0": 2.5e-05,
-      "O1": 2.5e-05,
-      "O2": 2.4e-05
-    }
-  },
-  {
-    "file": "bench_strength_red.f",
-    "label": "Strength Reduction",
-    "times": {
-      "O0": 0.000106,
-      "O1": 2.6e-05,
-      "O2": 2.8e-05
-    }
-  },
-  {
-    "file": "bench_combined.f",
-    "label": "Combined O1",
-    "times": {
-      "O0": 2e-05,
-      "O1": 2e-05,
-      "O2": 2.1000000000000002e-05
+      "O0": 0.003585,
+      "O2": 0.001914,
+      "O3": 0.001845
     }
   },
   {
@@ -67,80 +31,44 @@
     "label": "2D Stencil (tiling)",
     "times": {
       "O0": 0.000179,
-      "O1": 0.000185,
-      "O2": 0.000214
-    }
-  },
-  {
-    "file": "bench_heavy_fold.f",
-    "label": "[Heavy] Const Folding",
-    "times": {
-      "O0": 0.047929,
-      "O1": 0.047779,
-      "O2": 0.053295999999999996
+      "O2": 0.000217,
+      "O3": 0.000221
     }
   },
   {
     "file": "bench_heavy_licm.f",
     "label": "[Heavy] LICM",
     "times": {
-      "O0": 0.057321,
-      "O1": 0.05732,
-      "O2": 0.061086
-    }
-  },
-  {
-    "file": "bench_heavy_strength.f",
-    "label": "[Heavy] Strength Red",
-    "times": {
-      "O0": 0.528284,
-      "O1": 0.047779,
-      "O2": 0.05095
+      "O0": 0.058245,
+      "O2": 0.060187,
+      "O3": 0.058901
     }
   },
   {
     "file": "bench_heavy_sum.f",
     "label": "[Heavy] Sum",
     "times": {
-      "O0": 0.143313,
-      "O1": 0.143354,
-      "O2": 0.147501
+      "O0": 0.145591,
+      "O2": 0.149845,
+      "O3": 0.149197
     }
   },
   {
     "file": "bench_heavy_power.f",
     "label": "[Heavy] Power",
     "times": {
-      "O0": 0.527261,
-      "O1": 0.030457,
-      "O2": 0.029933
+      "O0": 0.522002,
+      "O2": 0.292461,
+      "O3": 0.294131
     }
   },
   {
     "file": "bench_heavy_pi.f",
     "label": "[Heavy] Pi",
     "times": {
-      "O0": 0.020113,
-      "O1": 0.020094,
-      "O2": 0.020475999999999998
-    }
-  },
-  {
-    "file": "bench_heavy_combined.f",
-    "label": "[Heavy] Combined",
-    "times": {
-      "O0": 0.143401,
-      "O1": 0.143285,
-      "O2": 0.149906
-    }
-  },
-  {
-    "file": "bench_heavy_allopt.f",
-    "label": "[Heavy] All Opts",
-    "times": {
-      "O0": 0.48288,
-      "O1": 0.054186,
-      "O2": 0.054462
+      "O0": 0.020422999999999997,
+      "O2": 0.020779,
+      "O3": 0.020824000000000002
     }
   }
 ]

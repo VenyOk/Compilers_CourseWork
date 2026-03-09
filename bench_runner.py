@@ -10,8 +10,9 @@ ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT))
 
 BENCH_FILES = [
-    "inputs/bench_licm.f",
-    "inputs/bench_cse.f",
+    "inputs/bench_lcinv.f",
+    "inputs/bench_csesin.f",
+    "inputs/bench_matmul.f",
     "inputs/bench_stencil_2d.f",
     "inputs/bench_heavy_licm.f",
     "inputs/bench_heavy_sum.f",
@@ -20,8 +21,9 @@ BENCH_FILES = [
 ]
 
 BENCH_LABELS = {
-    "bench_licm.f":        "LICM",
-    "bench_cse.f":         "CSE",
+    "bench_lcinv.f":       "LICM: SQRT invariant",
+    "bench_csesin.f":      "CSE: SIN/COS repeated",
+    "bench_matmul.f":      "Matmul 100x100 (interchange+tile)",
     "bench_stencil_2d.f":  "2D Stencil (tiling)",
     "bench_heavy_licm.f":  "[Heavy] LICM",
     "bench_heavy_sum.f":   "[Heavy] Sum",
