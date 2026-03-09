@@ -421,6 +421,14 @@ class LLVMGenerator:
                     self.code_lines.append(
                         f"  store {{double, double}} {rhs_val}, {{double, double}}* {ptr_name}")
                 else:
+                    # Type coercion for optimization-generated temporaries
+                    if base_type != rhs_type and rhs_type in ('i32', 'double') and base_type in ('i32', 'double'):
+                        conv = self._new_local()
+                        if base_type == 'double' and rhs_type == 'i32':
+                            self.code_lines.append(f"  {conv} = sitofp i32 {rhs_val} to double")
+                        else:
+                            self.code_lines.append(f"  {conv} = fptosi double {rhs_val} to i32")
+                        rhs_val = conv
 
                     if self.phi_tracking:
 
