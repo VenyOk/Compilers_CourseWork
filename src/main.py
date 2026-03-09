@@ -142,8 +142,8 @@ def main():
         dest='opt_level',
         type=int,
         default=0,
-        choices=[0, 1, 2, 3],
-        help='Уровень оптимизации: 0=нет, 1=базовые, 2=+LICM/CSE/тайлинг, 3=+скашивание'
+        choices=[0, 2, 3],
+        help='Уровень оптимизации: 0=нет, 2=CSE/LICM/тайлинг, 3=+скашивание'
     )
     args = parser.parse_args()
     if not args.file.endswith('.f'):
