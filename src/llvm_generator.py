@@ -210,6 +210,8 @@ class LLVMGenerator:
             self.var_ssa_versions = {}
             self.phi_tracking = []
             self._emit_declarations(ast.declarations)
+            # Mark insert position for deferred alloca of optimization temporaries
+            self._entry_alloca_insert_pos = len(self.code_lines)
             for stmt in ast.statements:
                 self._emit_statement(stmt)
             self.code_lines.append("  ret i32 0")
@@ -401,7 +403,13 @@ class LLVMGenerator:
                 else:
                     alloc_type = rhs_type if rhs_type in ('i32', 'double', 'i1') else 'i32'
                 local_name = f"%{stmt.target}"
-                self.code_lines.append(f"  {local_name} = alloca {alloc_type}")
+                alloca_instr = f"  {local_name} = alloca {alloc_type}"
+                # Emit alloca in entry block to avoid stack growth in loops
+                if hasattr(self, '_entry_alloca_insert_pos') and self.current_block != "entry":
+                    self.code_lines.insert(self._entry_alloca_insert_pos, alloca_instr)
+                    self._entry_alloca_insert_pos += 1
+                else:
+                    self.code_lines.append(alloca_instr)
                 self.var_alloc[stmt.target] = (alloc_type, local_name)
             if stmt.target in self.var_alloc:
                 alloc_type, ptr_name = self.var_alloc[stmt.target]

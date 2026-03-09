@@ -227,12 +227,10 @@ def _apply_cse_to_stmts(stmts: List[Statement], counter: List[int]) -> List[Stat
             stmt = dc_replace(stmt, body=new_body)
             result.append(stmt)
         elif isinstance(stmt, IfStatement):
+            # Не создаём новые CSE-переменные внутри ветвей IF:
+            # переменная, созданная в одной ветви, не определена в другой,
+            # что ломает phi-узлы генератора LLVM IR.
             block.cache.clear()
-            new_then = _apply_cse_to_stmts(stmt.then_body, counter)
-            new_elif = [(c, _apply_cse_to_stmts(b, counter)) for c, b in stmt.elif_parts]
-            new_else = (_apply_cse_to_stmts(stmt.else_body, counter)
-                        if stmt.else_body else stmt.else_body)
-            stmt = dc_replace(stmt, then_body=new_then, elif_parts=new_elif, else_body=new_else)
             result.append(stmt)
         else:
             result.extend(block.process(stmt))
