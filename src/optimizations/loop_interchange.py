@@ -4,7 +4,7 @@ from dataclasses import replace as dcReplace
 
 from src.core import Program, Statement, DoLoop, LabeledDoLoop
 from src.optimizations.base import ASTOptimizationPass
-from src.optimizations.loop_analysis import canInterchange, buildNest
+from src.optimizations.loop_analysis import canInterchange, buildNest, preferInterchange
 
 
 def interchangeNest(outer: Statement, inner: Statement) -> Statement:
@@ -32,7 +32,7 @@ def tryInterchange(loop: Statement) -> Statement:
         return loop
     inner = innerLoops[0]
     nest = buildNest(loop)
-    if nest.depth >= 2 and canInterchange(nest):
+    if nest.depth >= 2 and canInterchange(nest) and preferInterchange(nest):
         interchanged = interchangeNest(loop, inner)
         if isinstance(interchanged, (DoLoop, LabeledDoLoop)):
             newBody = [tryInterchange(s) for s in interchanged.body]

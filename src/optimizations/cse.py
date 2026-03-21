@@ -122,7 +122,7 @@ class CSEBlock:
             return Variable(name=tmpName, line=expr.line, col=expr.col)
         if isinstance(expr, (BinaryOp, FunctionCall)):
             self.counter[0] += 1
-            tmpName = f"cse{self.counter[0]}"
+            tmpName = f"cse_tmp_{self.counter[0]}"
             deps: Set[str] = set()
             varsInExpr(expr, deps)
             self.cache[key] = (tmpName, expr)

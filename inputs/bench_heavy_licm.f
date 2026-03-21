@@ -1,4 +1,4 @@
-      PROGRAM HEAVYLICM
+      PROGRAM HEVLCM
       IMPLICIT NONE
       INTEGER I
       REAL A, B, C, D, T1, T2, S

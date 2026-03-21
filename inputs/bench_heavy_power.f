@@ -1,4 +1,4 @@
-      PROGRAM HEAVYPOW
+      PROGRAM HEVPOW
       IMPLICIT NONE
       INTEGER I
       REAL X, S, A, B, C

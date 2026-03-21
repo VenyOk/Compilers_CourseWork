@@ -1,6 +1,7 @@
 import unittest
 import sys
 import os
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.llvm_generator import LLVMGenerator
@@ -19,8 +20,7 @@ def compile_code_llvm(code: str):
     if not semantic.analyze(ast):
         raise Exception(f"Semantic errors: {semantic.get_errors()}")
     llvm_gen = LLVMGenerator()
-    llvm_code = llvm_gen.generate(ast)
-    return llvm_code
+    return llvm_gen.generate(ast)
 
 
 class TestLLVMBasic(unittest.TestCase):
@@ -32,12 +32,7 @@ PROGRAM LLVM
     PRINT *, X
 END
 """
-        lexer = Lexer(code)
-        tokens = lexer.tokenize()
-        parser = Parser(tokens)
-        ast = parser.parse()
-        llvm_gen = LLVMGenerator()
-        llvm_code = llvm_gen.generate(ast)
+        llvm_code = compile_code_llvm(code)
         self.assertIn("define i32 @main()", llvm_code)
         self.assertIn("alloca", llvm_code)
         self.assertIn("store", llvm_code)
@@ -52,10 +47,10 @@ PROGRAM SIMPLE
 END
 """
         llvm_code = compile_code_llvm(code)
-        self.assertIn("define i32 @main()", llvm_code, "Должна быть функция main")
-        self.assertIn("alloca i32", llvm_code, "Должны быть аллокации переменных")
-        self.assertIn("store", llvm_code, "Должны быть операции store")
-        self.assertIn("ret i32 0", llvm_code, "Должен быть возврат из main")
+        self.assertIn("define i32 @main()", llvm_code)
+        self.assertIn("alloca i32", llvm_code)
+        self.assertIn("store", llvm_code)
+        self.assertIn("ret i32 0", llvm_code)
 
 
 class TestLLVMLoops(unittest.TestCase):
@@ -71,15 +66,14 @@ PROGRAM DOLOOP
 END
 """
         llvm_code = compile_code_llvm(code)
-        self.assertIn("define i32 @main()", llvm_code, "Должна быть функция main")
-        self.assertIn("alloca i32", llvm_code, "Должны быть аллокации переменных")
-        self.assertIn("phi", llvm_code, "Должны быть phi-функции для переменных циклов")
-        self.assertIn("br", llvm_code, "Должны быть условные переходы")
-        self.assertIn("add", llvm_code, "Должны быть операции сложения")
-        self.assertIn("label", llvm_code, "Должны быть метки для циклов")
+        self.assertIn("loop_1:", llvm_code)
+        self.assertIn("loop_body_1:", llvm_code)
+        self.assertIn("loop_end_1:", llvm_code)
+        self.assertIn("br i1", llvm_code)
+        self.assertIn("add i32", llvm_code)
 
     def test_nested_loops_llvm(self):
-        code = """PROGRAM NESTED_LOOPS
+        code = """PROGRAM NESTLP
         IMPLICIT NONE
         INTEGER I, J, SUM
         SUM = 0
@@ -91,13 +85,11 @@ END
         PRINT *, SUM
         END"""
         llvm_code = compile_code_llvm(code)
-        self.assertIn("define i32 @main()", llvm_code, "Должна быть функция main")
-        self.assertIn("alloca i32", llvm_code, "Должны быть аллокации переменных")
-        self.assertIn("phi", llvm_code, "Должны быть phi-функции для переменных циклов")
-        self.assertIn("br", llvm_code, "Должны быть условные переходы")
-        self.assertIn("mul", llvm_code, "Должны быть операции умножения")
-        self.assertIn("add", llvm_code, "Должны быть операции сложения")
-        self.assertIn("label", llvm_code, "Должны быть метки для циклов")
+        self.assertIn("define i32 @main()", llvm_code)
+        self.assertIn("loop_1:", llvm_code)
+        self.assertIn("mul i32", llvm_code)
+        self.assertIn("add i32", llvm_code)
+        self.assertIn("br label", llvm_code)
 
 
 class TestLLVMControlFlow(unittest.TestCase):
@@ -114,12 +106,12 @@ PROGRAM IFTEST
 END
 """
         llvm_code = compile_code_llvm(code)
-        self.assertIn("icmp", llvm_code, "Должны быть операции сравнения")
-        self.assertIn("br i1", llvm_code, "Должны быть условные переходы")
-        self.assertIn(":", llvm_code, "Должны быть метки для ветвлений")
+        self.assertIn("icmp", llvm_code)
+        self.assertIn("br i1", llvm_code)
+        self.assertIn("if_then", llvm_code)
 
     def test_complex_if_structure_llvm(self):
-        code = """PROGRAM COMPLEX_IF
+        code = """PROGRAM CMPIF
         IMPLICIT NONE
         INTEGER X, Y, RESULT
         X = 10
@@ -136,11 +128,10 @@ END
         PRINT *, RESULT
         END"""
         llvm_code = compile_code_llvm(code)
-        self.assertIn("icmp", llvm_code, "Должны быть операции сравнения")
-        self.assertIn("br i1", llvm_code, "Должны быть условные переходы")
-        self.assertIn("add", llvm_code, "Должна быть операция сложения")
-        self.assertIn("sub", llvm_code, "Должна быть операция вычитания")
-        self.assertIn(":", llvm_code, "Должны быть метки для ветвлений")
+        self.assertIn("icmp", llvm_code)
+        self.assertIn("br i1", llvm_code)
+        self.assertIn("add i32", llvm_code)
+        self.assertIn("sub i32", llvm_code)
 
 
 class TestLLVMExpressions(unittest.TestCase):
@@ -166,17 +157,17 @@ PROGRAM ARITH
 END
 """
         llvm_code = compile_code_llvm(code)
-        self.assertIn("add", llvm_code, "Должны быть операции сложения")
-        self.assertIn("sub", llvm_code, "Должны быть операции вычитания")
-        self.assertIn("mul", llvm_code, "Должны быть операции умножения")
-        self.assertIn("sdiv", llvm_code, "Должны быть операции деления для целых")
-        self.assertIn("fadd", llvm_code, "Должны быть операции сложения для вещественных")
-        self.assertIn("fsub", llvm_code, "Должны быть операции вычитания для вещественных")
-        self.assertIn("fmul", llvm_code, "Должны быть операции умножения для вещественных")
-        self.assertIn("fdiv", llvm_code, "Должны быть операции деления для вещественных")
+        self.assertIn("add", llvm_code)
+        self.assertIn("sub", llvm_code)
+        self.assertIn("mul", llvm_code)
+        self.assertIn("sdiv", llvm_code)
+        self.assertIn("fadd", llvm_code)
+        self.assertIn("fsub", llvm_code)
+        self.assertIn("fmul", llvm_code)
+        self.assertIn("fdiv", llvm_code)
 
     def test_complex_expressions_llvm(self):
-        code = """PROGRAM COMPLEX_EXPR
+        code = """PROGRAM CMPEX
         IMPLICIT NONE
         INTEGER A, B, C, D, RESULT
         A = 10
@@ -187,15 +178,15 @@ END
         PRINT *, RESULT
         END"""
         llvm_code = compile_code_llvm(code)
-        self.assertIn("add", llvm_code, "Должны быть операции сложения")
-        self.assertIn("mul", llvm_code, "Должны быть операции умножения")
-        self.assertIn("sdiv", llvm_code, "Должны быть операции деления")
-        self.assertIn("sub", llvm_code, "Должны быть операции вычитания")
+        self.assertIn("add i32", llvm_code)
+        self.assertIn("mul i32", llvm_code)
+        self.assertIn("sdiv i32", llvm_code)
+        self.assertIn("sub i32", llvm_code)
 
 
 class TestLLVMArrays(unittest.TestCase):
     def test_array_operations_llvm(self):
-        code = """PROGRAM ARRAY_TEST
+        code = """PROGRAM ARRTST
         IMPLICIT NONE
         INTEGER A(10), B(10)
         INTEGER I
@@ -206,15 +197,65 @@ class TestLLVMArrays(unittest.TestCase):
         PRINT *, A(5), B(5)
         END"""
         llvm_code = compile_code_llvm(code)
-        self.assertIn("[10 x i32]", llvm_code, "Должна быть аллокация массива из 10 элементов")
-        self.assertIn("getelementptr", llvm_code, "Должны быть операции getelementptr для доступа к массивам")
-        self.assertIn("store", llvm_code, "Должны быть операции store для записи в массивы")
-        self.assertIn("load", llvm_code, "Должны быть операции load для чтения из массивов")
+        self.assertIn("alloca [10 x i32]", llvm_code)
+        self.assertIn("getelementptr", llvm_code)
+        self.assertIn("store i32", llvm_code)
+        self.assertIn("load i32", llvm_code)
+
+    def test_parameter_based_bounds_array_llvm(self):
+        code = """PROGRAM BOUND1
+        IMPLICIT NONE
+        INTEGER LOW, HIGH
+        PARAMETER (LOW = 5, HIGH = 7)
+        INTEGER A(LOW:HIGH)
+        A(LOW) = 10
+        A(HIGH) = 20
+        PRINT *, A(LOW), A(HIGH)
+        END"""
+        llvm_code = compile_code_llvm(code)
+        self.assertIn("sub i32", llvm_code)
+        self.assertIn("getelementptr", llvm_code)
+
+    def test_common_and_exit_llvm(self):
+        code = """PROGRAM CMNEXI
+        IMPLICIT NONE
+        INTEGER A(6), I
+        COMMON /BLK/ A
+        DO I = 1, 10
+            IF (I .GT. 3) EXIT
+        ENDDO
+        CALL SHOW()
+        END
+
+        SUBROUTINE SHOW()
+        IMPLICIT NONE
+        INTEGER A(6)
+        COMMON /BLK/ A
+        PRINT *, A(1)
+        RETURN
+        END"""
+        llvm_code = compile_code_llvm(code)
+        self.assertIn("@COMMON_BLK_A = global [6 x i32] zeroinitializer", llvm_code)
+        self.assertIn("br label %loop_end_", llvm_code)
+
+    def test_parallel_runtime_helper_is_declared(self):
+        code = """PROGRAM PARLLP
+        IMPLICIT NONE
+        INTEGER I, J
+        INTEGER A(64,64)
+        DO I = 1, 64
+            DO J = 1, 64
+                A(I,J) = I + J
+            ENDDO
+        ENDDO
+        END"""
+        llvm_code = compile_code_llvm(code)
+        self.assertIn("declare void @fortran_parallel_for_i32", llvm_code)
 
 
 class TestLLVMFunctions(unittest.TestCase):
     def test_function_calls_llvm(self):
-        code = """PROGRAM FUNC_TEST
+        code = """PROGRAM FNTEST
         IMPLICIT NONE
         REAL X, Y, Z
         X = 2.5
@@ -223,13 +264,12 @@ class TestLLVMFunctions(unittest.TestCase):
         PRINT *, Y, Z
         END"""
         llvm_code = compile_code_llvm(code)
-        self.assertIn("declare double @sqrt", llvm_code, "Должно быть объявление функции sqrt")
-        self.assertIn("declare double @sin", llvm_code, "Должно быть объявление функции sin")
-        self.assertIn("declare double @cos", llvm_code, "Должно быть объявление функции cos")
-        self.assertIn("call double @sqrt", llvm_code, "Должен быть вызов sqrt")
-        self.assertIn("call double @sin", llvm_code, "Должен быть вызов sin")
-        self.assertIn("call double @cos", llvm_code, "Должен быть вызов cos")
-        self.assertIn("double", llvm_code, "Должен использоваться тип double")
+        self.assertIn("declare double @sqrt", llvm_code)
+        self.assertIn("declare double @sin", llvm_code)
+        self.assertIn("declare double @cos", llvm_code)
+        self.assertIn("call double @sqrt", llvm_code)
+        self.assertIn("call double @sin", llvm_code)
+        self.assertIn("call double @cos", llvm_code)
 
     def test_math_functions_llvm(self):
         code = """
@@ -247,14 +287,14 @@ PROGRAM MATHFN
 END
 """
         llvm_code = compile_code_llvm(code)
-        self.assertIn("declare", llvm_code, "Должны быть объявления функций")
-        self.assertIn("call", llvm_code, "Должны быть вызовы функций")
+        self.assertIn("declare", llvm_code)
+        self.assertIn("call", llvm_code)
 
 
 class TestLLVMTypes(unittest.TestCase):
     def test_integer_type_llvm(self):
         code = """
-PROGRAM INTEGERS
+PROGRAM INTS
     INTEGER I, J, K
     I = 10
     J = 20
@@ -262,8 +302,8 @@ PROGRAM INTEGERS
 END
 """
         llvm_code = compile_code_llvm(code)
-        self.assertIn("i32", llvm_code, "Должен использоваться тип i32 для INTEGER")
-        self.assertIn("alloca i32", llvm_code, "Должны быть аллокации i32")
+        self.assertIn("i32", llvm_code)
+        self.assertIn("alloca i32", llvm_code)
 
     def test_real_type_llvm(self):
         code = """
@@ -275,12 +315,12 @@ PROGRAM REALS
 END
 """
         llvm_code = compile_code_llvm(code)
-        self.assertIn("double", llvm_code, "Должен использоваться тип double для REAL")
-        self.assertIn("alloca double", llvm_code, "Должны быть аллокации double")
+        self.assertIn("double", llvm_code)
+        self.assertIn("alloca double", llvm_code)
 
     def test_logical_type_llvm(self):
         code = """
-PROGRAM LOGICALS
+PROGRAM LOGICS
     LOGICAL L1, L2, L3
     L1 = .TRUE.
     L2 = .FALSE.
@@ -288,8 +328,8 @@ PROGRAM LOGICALS
 END
 """
         llvm_code = compile_code_llvm(code)
-        self.assertIn("i1", llvm_code, "Должен использоваться тип i1 для LOGICAL")
-        self.assertIn("alloca i1", llvm_code, "Должны быть аллокации i1")
+        self.assertIn("i1", llvm_code)
+        self.assertIn("alloca i1", llvm_code)
 
 
 if __name__ == '__main__':

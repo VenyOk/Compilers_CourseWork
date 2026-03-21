@@ -217,157 +217,51 @@ class Lexer:
         start_line = self.line
         start_col = self.col
         num_str = ""
-        has_spaces_inside = False
-        while True:
+        is_real = False
+        if self.peek() == '.':
+            is_real = True
+            num_str += self.advance()
+            if not self.peek() or not self.peek().isdigit():
+                raise SyntaxError(
+                    f"[строка {start_line}, колонка {start_col}] Неверный формат числа. "
+                    f"После точки в вещественном литерале ожидается цифра."
+                )
+        else:
             while self.peek() and self.peek().isdigit():
                 num_str += self.advance()
-            if not self.peek() or self.peek() not in ' \t':
-                break
-            saved_pos = self.pos
-            saved_line = self.line
-            saved_col = self.col
-            self.advance()
-            if self.peek() and self.peek() == '.':
-                saved_pos2 = self.pos
-                saved_line2 = self.line
-                saved_col2 = self.col
-                self.advance()
-                while self.peek() and self.peek() in ' \t':
-                    self.advance()
-                if self.peek() and self.peek().isalpha():
-                    self.pos = saved_pos
-                    self.line = saved_line
-                    self.col = saved_col
-                    break
-                else:
-                    self.pos = saved_pos2
-                    self.line = saved_line2
-                    self.col = saved_col2
-                    has_spaces_inside = True
-                    continue
-            if self.peek() and self.peek().upper() in {'E', 'D'}:
-                self.pos = saved_pos
-                self.line = saved_line
-                self.col = saved_col
-                break
-            elif self.peek() and self.peek().isdigit():
-                if has_spaces_inside:
-                    continue
-                else:
-                    digits_at_end = 0
-                    for i in range(len(num_str) - 1, -1, -1):
-                        if num_str[i].isdigit():
-                            digits_at_end += 1
-                        else:
-                            break
-                    if digits_at_end >= 2 and '.' not in num_str:
-                        self.pos = saved_pos
-                        self.line = saved_line
-                        self.col = saved_col
-                        break
-                    else:
-                        has_spaces_inside = True
-                        continue
-            else:
-                self.pos = saved_pos
-                self.line = saved_line
-                self.col = saved_col
-                break
-        has_dot = False
         if self.peek() == '.':
-            dot_pos = self.pos
-            dot_line = self.line
-            dot_col = self.col
+            is_real = True
             num_str += self.advance()
-            has_dot = True
-            if self.peek() in ' \t':
-                saved_pos = self.pos
-                saved_line = self.line
-                saved_col = self.col
-                self.advance()
-                if self.peek() and self.peek().isalpha():
-                    num_str = num_str[:-1]
-                    self.pos = dot_pos
-                    self.line = dot_line
-                    self.col = dot_col
-                    has_dot = False
-                else:
-                    self.pos = saved_pos
-                    self.line = saved_line
-                    self.col = saved_col
-            if has_dot:
-                while self.peek() and self.peek().isdigit():
-                    num_str += self.advance()
-                if self.peek() in ' \t':
-                    saved_pos = self.pos
-                    saved_line = self.line
-                    saved_col = self.col
-                    self.advance()
-                    if self.peek() and self.peek().upper() in {'E', 'D'}:
-                        pass
-                    else:
-                        self.pos = saved_pos
-                        self.line = saved_line
-                        self.col = saved_col
-        if not num_str and self.peek() == '.':
-            num_str += self.advance()
-            has_dot = True
-            while True:
-                while self.peek() and self.peek().isdigit():
-                    num_str += self.advance()
-                if not self.peek() or self.peek() not in ' \t':
-                    break
-                saved_pos = self.pos
-                saved_line = self.line
-                saved_col = self.col
-                self.advance()
-                if self.peek() and (self.peek().isdigit() or self.peek().upper() in {'E', 'D'}):
-                    continue
-                else:
-                    self.pos = saved_pos
-                    self.line = saved_line
-                    self.col = saved_col
-                    break
+        if is_real:
+            while self.peek() and self.peek().isdigit():
+                num_str += self.advance()
         exp_char = None
         if self.peek() and self.peek().upper() in {'E', 'D'}:
-            exp_char = self.peek().upper()
-            num_str += self.advance()
+            is_real = True
+            exp_char = self.advance()
+            num_str += exp_char
             if self.peek() and self.peek() in {'+', '-'}:
                 num_str += self.advance()
-            while True:
-                while self.peek() and self.peek().isdigit():
-                    num_str += self.advance()
-                if not self.peek() or self.peek() not in ' \t':
-                    break
-                saved_pos = self.pos
-                saved_line = self.line
-                saved_col = self.col
-                self.advance()
-                if not self.peek() or not self.peek().isdigit():
-                    self.pos = saved_pos
-                    self.line = saved_line
-                    self.col = saved_col
-                    break
-        if '.' in num_str or exp_char is not None or has_dot:
+            if not self.peek() or not self.peek().isdigit():
+                raise SyntaxError(
+                    f"[строка {start_line}, колонка {start_col}] Неполная экспонента в числе '{num_str}'. "
+                    f"После символа '{exp_char}' ожидается целое число."
+                )
+            while self.peek() and self.peek().isdigit():
+                num_str += self.advance()
+        if is_real:
             float_str = num_str.replace('D', 'E').replace('d', 'E')
             if float_str.startswith('.'):
                 float_str = '0' + float_str
-            if exp_char is not None and not any(c.isdigit() for c in num_str[num_str.upper().rfind(exp_char)+1:]):
-                raise SyntaxError(
-                    f"[строка {start_line}, колонка {start_col}] Неполная экспонента в числе '{num_str}'. "
-                    f"После символа экспоненты '{exp_char}' ожидается целое число. "
-                    f"Примеры правильных чисел: 1.5E3, 2.0D-5"
-                )
+            if float_str.endswith('.'):
+                float_str += '0'
             try:
                 return Token(type=TokenType.REAL_LIT, value=float(float_str), line=start_line, col=start_col)
             except ValueError:
                 raise SyntaxError(
-                    f"[строка {start_line}, колонка {start_col}] Неверный формат числа '{float_str}'. "
-                    f"Проверьте правильность написания вещественного числа. "
-                    f"Примеры: 3.14, 1.5E10, 2.0D-3"
+                    f"[строка {start_line}, колонка {start_col}] Неверный формат вещественного числа '{num_str}'."
                 )
-        else:
-            return Token(type=TokenType.INTEGER_LIT, value=int(num_str), line=start_line, col=start_col)
+        return Token(type=TokenType.INTEGER_LIT, value=int(num_str), line=start_line, col=start_col)
 
     def read_string(self, quote_char: str) -> Token:
         start_line = self.line
@@ -385,9 +279,7 @@ class Lexer:
         else:
             raise SyntaxError(
                 f"[строка {start_line}, колонка {start_col}] Незавершенная строковая константа. "
-                f"Открывающая кавычка '{quote_char}' не закрыта. "
-                f"Убедитесь, что строка закрыта той же кавычкой. "
-                f"Пример: 'текст' или \"текст\""
+                f"Ожидалась закрывающая кавычка '{quote_char}'."
             )
         return Token(type=TokenType.STRING_LIT, value=string_val, line=start_line, col=start_col)
 
@@ -417,36 +309,12 @@ class Lexer:
         if upper_ident in self.keywords:
             if ident and not ident[0].isalpha():
                 self.errors.append(
-                    f"Имя переменной '{ident}' должно начинаться с буквы на строке {start_line}:{start_col}"
+                    f"[строка {start_line}, колонка {start_col}] Имя '{ident}' должно начинаться с буквы."
                 )
             return Token(type=self.keywords[upper_ident], value=ident, line=start_line, col=start_col)
-        while True:
-            if not self.peek() or self.peek() not in ' \t':
-                break
-            saved_pos = self.pos
-            saved_line = self.line
-            saved_col = self.col
-            self.advance()
-            if not self.peek() or not (self.peek().isalnum() or self.peek() == '_'):
-                self.pos = saved_pos
-                self.line = saved_line
-                self.col = saved_col
-                break
-            temp_ident = ident
-            while self.peek() and (self.peek().isalnum() or self.peek() == '_'):
-                temp_ident += self.advance()
-            temp_upper = temp_ident.upper()
-            if temp_upper in self.keywords:
-                self.pos = saved_pos
-                self.line = saved_line
-                self.col = saved_col
-                break
-            ident = temp_ident
         if ident and not ident[0].isalpha():
             self.errors.append(
-                f"[строка {start_line}, колонка {start_col}] Имя переменной '{ident}' должно начинаться с буквы. "
-                f"В Fortran имена переменных начинаются с буквы, затем могут следовать буквы и цифры. "
-                f"Примеры правильных имен: A, X1, SUM, RESULT"
+                f"[строка {start_line}, колонка {start_col}] Имя переменной '{ident}' должно начинаться с буквы."
             )
         upper_ident = ident.upper()
         if upper_ident == "END":
@@ -455,35 +323,21 @@ class Lexer:
             saved_col = self.col
             while self.peek() and self.peek() in ' \t':
                 self.advance()
-            next_ident = ""
+            next_word = ""
             while self.peek() and (self.peek().isalnum() or self.peek() == '_'):
-                next_ident += self.peek()
-                break
-            if next_ident and next_ident.upper() in ('I', 'D'):
-                temp_pos = self.pos
-                full_word = ""
-                while self.peek() and (self.peek().isalnum() or self.peek() == '_'):
-                    full_word += self.advance()
-                full_word_upper = full_word.upper()
-                if full_word_upper in ('IF', 'DO'):
-                    combined = f"{upper_ident}{full_word_upper}"
-                    if combined == "ENDIF":
-                        return Token(type=TokenType.ENDIF, value=ident + full_word, line=start_line, col=start_col)
-                    elif combined == "ENDDO":
-                        return Token(type=TokenType.ENDDO, value=ident + full_word, line=start_line, col=start_col)
-                else:
-                    self.pos = temp_pos
-                    self.line = saved_line
-                    self.col = saved_col
-            else:
-                self.pos = saved_pos
-                self.line = saved_line
-                self.col = saved_col
+                next_word += self.advance()
+            next_upper = next_word.upper()
+            if next_upper == "IF":
+                return Token(type=TokenType.ENDIF, value=ident + next_word, line=start_line, col=start_col)
+            if next_upper == "DO":
+                return Token(type=TokenType.ENDDO, value=ident + next_word, line=start_line, col=start_col)
+            self.pos = saved_pos
+            self.line = saved_line
+            self.col = saved_col
         if len(ident) > 6:
             self.errors.append(
                 f"[строка {start_line}, колонка {start_col}] Имя переменной '{ident}' слишком длинное. "
-                f"В Fortran 77 максимальная длина имени переменной - 6 символов, получено {len(ident)}. "
-                f"Сократите имя до 6 символов или используйте другое имя. Пример: вместо '{ident}' используйте '{ident[:6]}'"
+                f"В Fortran 77 допустимо не более 6 символов."
             )
         return Token(type=TokenType.IDENTIFIER, value=ident, line=start_line, col=start_col)
 
@@ -585,30 +439,12 @@ class Lexer:
             op_token = self.read_operator_or_delimiter()
             if op_token:
                 return op_token
-            saved_pos = self.pos
-            saved_line = self.line
-            saved_col = self.col
-            while self.peek() and self.peek() in ' \t':
-                self.advance()
-            if self.peek() and self.peek().isdigit():
-                self.pos = saved_pos
-                self.line = saved_line
-                self.col = saved_col
+            if self.peek(1) and self.peek(1).isdigit():
                 return self.read_number()
-            if self.peek() and self.peek().isalpha():
-                self.pos = saved_pos
-                self.line = saved_line
-                self.col = saved_col
-                return None
-            self.pos = saved_pos
-            self.line = saved_line
-            self.col = saved_col
             char = self.peek()
             char_repr = repr(char)
             raise SyntaxError(
-                f"[строка {start_line}, колонка {start_col}] Неожиданный символ {char_repr}. "
-                f"Символ '{char}' не является частью допустимых конструкций языка Fortran. "
-                f"Проверьте правильность синтаксиса. Возможно, пропущен оператор или неверно написано ключевое слово."
+                f"[строка {start_line}, колонка {start_col}] Неожиданный символ {char_repr}."
             )
         if ch in {"'", '"'}:
             return self.read_string(ch)
@@ -618,16 +454,14 @@ class Lexer:
         char = self.peek()
         char_repr = repr(char)
         raise SyntaxError(
-            f"[строка {start_line}, колонка {start_col}] Неожиданный символ {char_repr}. "
-            f"Символ '{char}' не является частью допустимых конструкций языка Fortran. "
-            f"Проверьте правильность синтаксиса. Возможно, пропущен оператор или неверно написано ключевое слово."
+            f"[строка {start_line}, колонка {start_col}] Неожиданный символ {char_repr}."
         )
 
     def check_fortran_line_format(self, line_text: str, line_num: int):
         line_text = line_text.rstrip('\n\r')
         if len(line_text) > 80:
             self.errors.append(
-                f"Строка {line_num} превышает 80 символов (длина: {len(line_text)})"
+                f" {line_num}  80  (: {len(line_text)})"
             )
         if len(line_text) > 80:
             line_text = line_text[:80]
@@ -644,13 +478,47 @@ class Lexer:
     def tokenize(self) -> List[Token]:
         lines = self.text.split('\n')
         processed_lines = []
+        current_line = None
         for i, line in enumerate(lines, 1):
             self.check_fortran_line_format(line, i)
             line_for_processing = line.rstrip('\n\r')
             if len(line_for_processing) > 72:
-                processed_lines.append(line_for_processing[:72] + '\n')
-            else:
+                line_for_processing = line_for_processing[:72]
+            stripped = line_for_processing.strip()
+            label_area = line_for_processing[:5] if len(line_for_processing) >= 5 else line_for_processing
+            fixed_form_layout = len(line_for_processing) > 5 and all(ch == ' ' or ch.isdigit() for ch in label_area)
+            is_comment = bool(
+                stripped and (
+                    stripped.startswith('!') or
+                    (line_for_processing and line_for_processing[0].upper() == 'C' and line_for_processing[:1].strip() == 'C')
+                )
+            )
+            is_continuation = (
+                fixed_form_layout and
+                not is_comment and
+                len(line_for_processing) > 5 and
+                line_for_processing[5] not in {' ', '0'}
+            )
+            if is_comment:
+                if current_line is not None:
+                    processed_lines.append(current_line + '\n')
+                    current_line = None
                 processed_lines.append(line_for_processing + '\n')
+                continue
+            if not stripped:
+                if current_line is not None:
+                    processed_lines.append(current_line + '\n')
+                    current_line = None
+                processed_lines.append('\n')
+                continue
+            if is_continuation and current_line is not None:
+                current_line = current_line.rstrip('\n\r') + line_for_processing[6:]
+                continue
+            if current_line is not None:
+                processed_lines.append(current_line + '\n')
+            current_line = line_for_processing
+        if current_line is not None:
+            processed_lines.append(current_line + '\n')
         self.text = ''.join(processed_lines)
         self.len = len(self.text)
         self.pos = 0
@@ -664,7 +532,7 @@ class Lexer:
                     char = self.peek()
                     raise SyntaxError(
                         f"[строка {self.line}, колонка {self.col}] Неожиданный символ '{char}'. "
-                        f"Не удалось распознать токен. Проверьте правильность синтаксиса Fortran."
+                        f"Не удалось распознать токен."
                     )
                 if token.type == TokenType.COMMENT:
                     continue
@@ -724,12 +592,14 @@ class FunctionDef(ASTNode):
 @dataclass
 class Declaration(ASTNode):
     type: str = ""
-    names: List[Tuple[str, Optional[List[Tuple[int, int]]]]
-                ] = field(default_factory=list)
+    names: List[Tuple[str, Optional[List[object]]]] = field(default_factory=list)
     type_size: Optional[int] = None
 
     def __str__(self):
-        names_str = ", ".join(n[0] for n in self.names)
+        names_str = ", ".join(
+            f"{name}{_format_dimension_list(dim_ranges)}" if dim_ranges else name
+            for name, dim_ranges in self.names
+        )
         return f"{self.type} {names_str}"
 
 
@@ -782,17 +652,10 @@ class ImplicitStatement(ASTNode):
 
 @dataclass
 class DimensionStatement(ASTNode):
-    names: List[Tuple[str, List[Tuple[int, int]]]
-                ] = field(default_factory=list)
+    names: List[Tuple[str, List[object]]] = field(default_factory=list)
 
     def __str__(self):
-        def format_dim(dim_range: Tuple[int, int]) -> str:
-            k, l = dim_range
-            if k == 1:
-                return str(l)
-            return f"{k}:{l}"
-        names_str = ", ".join(
-            f"{n[0]}({','.join(format_dim(d) for d in n[1])})" for n in self.names)
+        names_str = ", ".join(f"{name}{_format_dimension_list(dim_ranges)}" for name, dim_ranges in self.names)
         return f"DIMENSION {names_str}"
 
 
@@ -856,6 +719,17 @@ class DoLoop(Statement):
 
     def __str__(self):
         return f"DO {self.var} = ... END DO"
+
+
+@dataclass
+class ParallelDoLoop(DoLoop):
+    grain: int = 1
+    threads_hint: int = 0
+    strategy: str = ""
+    private_vars: List[str] = field(default_factory=list)
+
+    def __str__(self):
+        return f"PARALLEL DO {self.var} = ... END DO"
 
 
 @dataclass
@@ -1018,12 +892,6 @@ class LabeledDoWhile(Statement):
 
 
 @dataclass
-class ExitStatement(Statement):
-    def __str__(self):
-        return "EXIT"
-
-
-@dataclass
 class Expression(ASTNode):
     pass
 
@@ -1114,6 +982,43 @@ class ComplexLiteral(Expression):
         return f"({self.real_part}, {self.imag_part})"
 
 
+def _format_dimension_bound(bound: object) -> str:
+    if isinstance(bound, int):
+        return str(bound)
+    if isinstance(bound, IntegerLiteral):
+        return str(bound.value)
+    if isinstance(bound, Variable):
+        return bound.name
+    if isinstance(bound, UnaryOp):
+        return f"{bound.op}{_format_dimension_bound(bound.operand)}"
+    if isinstance(bound, BinaryOp):
+        left = _format_dimension_bound(bound.left)
+        right = _format_dimension_bound(bound.right)
+        return f"{left}{bound.op}{right}"
+    if isinstance(bound, RealLiteral):
+        return str(bound.value)
+    if isinstance(bound, LogicalLiteral):
+        return ".TRUE." if bound.value else ".FALSE."
+    if isinstance(bound, StringLiteral):
+        return repr(bound.value)
+    return str(bound)
+
+
+def _format_dimension_spec(dim_spec: object) -> str:
+    if isinstance(dim_spec, tuple) and len(dim_spec) == 2:
+        lower, upper = dim_spec
+        lower_text = _format_dimension_bound(lower)
+        upper_text = _format_dimension_bound(upper)
+        if lower_text == "1":
+            return upper_text
+        return f"{lower_text}:{upper_text}"
+    return _format_dimension_bound(dim_spec)
+
+
+def _format_dimension_list(dim_specs: List[object]) -> str:
+    return "(" + ", ".join(_format_dimension_spec(dim_spec) for dim_spec in dim_specs) + ")"
+
+
 class Parser:
     def __init__(self, tokens: List[Token]):
         self.tokens = tokens
@@ -1139,10 +1044,10 @@ class Parser:
         if self.current().type != token_type:
             current = self.current()
             token_names = {
-                TokenType.IDENTIFIER: "идентификатор",
-                TokenType.INTEGER_LIT: "целое число",
-                TokenType.REAL_LIT: "вещественное число",
-                TokenType.STRING_LIT: "строковая константа",
+                TokenType.IDENTIFIER: "",
+                TokenType.INTEGER_LIT: " ",
+                TokenType.REAL_LIT: " ",
+                TokenType.STRING_LIT: " ",
                 TokenType.LPAREN: "'('",
                 TokenType.RPAREN: "')'",
                 TokenType.COMMA: "','",
@@ -1161,9 +1066,9 @@ class Parser:
             got_name = token_names.get(current.type, current.type.name)
             got_value = f" '{current.value}'" if current.value else ""
             raise SyntaxError(
-                f"[строка {current.line}, колонка {current.col}] Ожидается {expected_name}, "
-                f"но получено {got_name}{got_value}. "
-                f"Проверьте правильность синтаксиса. Возможно, пропущен символ или неверно написано ключевое слово."
+                f"[ {current.line},  {current.col}]  {expected_name}, "
+                f"  {got_name}{got_value}. "
+                f"  . ,       ."
             )
         return self.advance()
 
@@ -1190,12 +1095,13 @@ class Parser:
         while self.match(TokenType.IMPLICIT):
             if other_declarations_found:
                 raise SyntaxError(
-                    f"IMPLICIT должен предшествовать всем другим невыполняемым операторам на строке {self.current().line}:{self.current().col}"
+                    f"IMPLICIT         {self.current().line}:{self.current().col}"
                 )
             declarations.append(self.parse_implicit_statement())
             implicit_found = True
         while self.match(TokenType.INTEGER, TokenType.REAL, TokenType.LOGICAL, TokenType.COMPLEX, TokenType.CHARACTER,
-                         TokenType.DOUBLEPRECISION, TokenType.DIMENSION, TokenType.PARAMETER, TokenType.DATA):
+                         TokenType.DOUBLEPRECISION, TokenType.DIMENSION, TokenType.PARAMETER, TokenType.DATA,
+                         TokenType.EXTERNAL, TokenType.COMMON):
             other_declarations_found = True
             if self.match(TokenType.DIMENSION):
                 declarations.append(self.parse_dimension_statement())
@@ -1203,11 +1109,16 @@ class Parser:
                 declarations.append(self.parse_parameter_statement())
             elif self.match(TokenType.DATA):
                 declarations.append(self.parse_data_statement())
+            elif self.match(TokenType.EXTERNAL):
+                declarations.append(self.parse_external_statement())
+            elif self.match(TokenType.COMMON):
+                declarations.append(self.parse_common_statement())
             else:
                 declarations.extend(self.parse_declaration())
             self.skip_comments()
             if not self.match(TokenType.INTEGER, TokenType.REAL, TokenType.LOGICAL, TokenType.COMPLEX, TokenType.CHARACTER,
-                             TokenType.DOUBLEPRECISION, TokenType.DIMENSION, TokenType.PARAMETER, TokenType.DATA):
+                             TokenType.DOUBLEPRECISION, TokenType.DIMENSION, TokenType.PARAMETER, TokenType.DATA,
+                             TokenType.EXTERNAL, TokenType.COMMON):
                 break
 
         if (not name or name == "MAIN"):
@@ -1304,7 +1215,7 @@ class Parser:
                     if self.match(TokenType.IDENTIFIER):
                         ident_token = self.current()
                         raise SyntaxError(
-                            f"Имя переменной '{int_token.value}{ident_token.value}' не может начинаться с цифры на строке {int_token.line}:{int_token.col}"
+                            f"  '{int_token.value}{ident_token.value}'        {int_token.line}:{int_token.col}"
                         )
                     self.pos = saved_pos
                     self.line = saved_line
@@ -1314,53 +1225,11 @@ class Parser:
                 dim_ranges = None
                 if self.match(TokenType.LPAREN):
                     self.advance()
-                    dim_ranges = []
-                    while True:
-                        first_negative = False
-                        if self.match(TokenType.MINUS):
-                            self.advance()
-                            first_negative = True
-                        if self.match(TokenType.INTEGER_LIT):
-                            first_token = self.advance()
-                            first_value = -first_token.value if first_negative else first_token.value
-                            if self.match(TokenType.COLON):
-                                self.advance()
-                                second_negative = False
-                                if self.match(TokenType.MINUS):
-                                    self.advance()
-                                    second_negative = True
-                                if not self.match(TokenType.INTEGER_LIT):
-                                    raise SyntaxError(
-                                        f"Ожидается целое число после ':' в диапазоне индексов на строке {self.current().line}:{self.current().col}"
-                                    )
-                                second_token = self.advance()
-                                second_value = -second_token.value if second_negative else second_token.value
-                                dim_ranges.append((first_value, second_value))
-                            elif self.match(TokenType.COMMA, TokenType.RPAREN):
-                                dim_ranges.append(first_value)
-                            else:
-                                raise SyntaxError(
-                                    f"Ожидается ':' или ',' после размера массива на строке {self.current().line}:{self.current().col}"
-                                )
-                        else:
-                            raise SyntaxError(
-                                f"Ожидается целое число для размера массива на строке {self.current().line}:{self.current().col}"
-                            )
-                        if not self.match(TokenType.COMMA):
-                            break
-                        self.advance()
+                    dim_ranges = self.parse_dimension_specs()
                     if len(dim_ranges) > 7:
                         raise SyntaxError(
-                            f"Массив '{name}' имеет {len(dim_ranges)} измерений, максимум допускается 7 на строке {name_token.line}:{name_token.col}"
+                            f" '{name}'  {len(dim_ranges)} ,   7   {name_token.line}:{name_token.col}"
                         )
-                    for i, dim_range in enumerate(dim_ranges):
-                        if isinstance(dim_range, tuple):
-                            k, l = dim_range
-                            if k > l:
-                                raise SyntaxError(
-                                    f"Неверный диапазон для измерения {i+1} массива '{name}': "
-                                    f"начальное значение ({k}) больше конечного ({l}) на строке {name_token.line}:{name_token.col}"
-                                )
                     self.expect(TokenType.RPAREN)
                 names.append((name, dim_ranges))
                 if not self.match(TokenType.COMMA):
@@ -1370,7 +1239,7 @@ class Parser:
                          names=names, type_size=type_size))
         else:
             raise SyntaxError(
-                f"Ожидается объявление типа (INTEGER/REAL/COMPLEX/CHARACTER/LOGICAL) на строке {self.current().line}:{self.current().col}")
+                f"   (INTEGER/REAL/COMPLEX/CHARACTER/LOGICAL)   {self.current().line}:{self.current().col}")
         return decls
 
     def parse_implicit_statement(self):
@@ -1382,7 +1251,7 @@ class Parser:
         while True:
             if not self.match(TokenType.INTEGER, TokenType.REAL, TokenType.LOGICAL, TokenType.COMPLEX, TokenType.CHARACTER, TokenType.DOUBLEPRECISION):
                 raise SyntaxError(
-                    f"Ожидается тип (INTEGER/REAL/LOGICAL/COMPLEX/CHARACTER/DOUBLE PRECISION) в IMPLICIT на строке {self.current().line}:{self.current().col}"
+                    f"  (INTEGER/REAL/LOGICAL/COMPLEX/CHARACTER/DOUBLE PRECISION)  IMPLICIT   {self.current().line}:{self.current().col}"
                 )
             type_token = self.advance()
             type_name = type_token.value.upper()
@@ -1393,7 +1262,7 @@ class Parser:
                     type_size = self.advance().value
                 else:
                     raise SyntaxError(
-                        f"Ожидается целое число после '*' в IMPLICIT на строке {self.current().line}:{self.current().col}"
+                        f"    '*'  IMPLICIT   {self.current().line}:{self.current().col}"
                     )
             self.expect(TokenType.LPAREN)
             letters = []
@@ -1406,15 +1275,15 @@ class Parser:
                         letters.append(letter_spec)
                     else:
                         raise SyntaxError(
-                            f"Ожидается одна буква в IMPLICIT на строке {letter_token.line}:{letter_token.col}, получено '{letter_spec}'"
+                            f"    IMPLICIT   {letter_token.line}:{letter_token.col},  '{letter_spec}'"
                         )
                 elif self.match(TokenType.INTEGER_LIT):
                     raise SyntaxError(
-                        f"Ожидается буква в IMPLICIT на строке {self.current().line}:{self.current().col}"
+                        f"   IMPLICIT   {self.current().line}:{self.current().col}"
                     )
                 else:
                     raise SyntaxError(
-                        f"Ожидается буква в IMPLICIT на строке {self.current().line}:{self.current().col}"
+                        f"   IMPLICIT   {self.current().line}:{self.current().col}"
                     )
                 if self.match(TokenType.MINUS):
                     self.advance()
@@ -1425,11 +1294,11 @@ class Parser:
                             letters[-1] = f"{letters[-1]}-{end_letter}"
                         else:
                             raise SyntaxError(
-                                f"Ожидается одна буква в диапазоне IMPLICIT на строке {end_letter_token.line}:{end_letter_token.col}"
+                                f"     IMPLICIT   {end_letter_token.line}:{end_letter_token.col}"
                             )
                     else:
                         raise SyntaxError(
-                            f"Ожидается буква после '-' в диапазоне IMPLICIT на строке {self.current().line}:{self.current().col}"
+                            f"   '-'   IMPLICIT   {self.current().line}:{self.current().col}"
                         )
                 if not self.match(TokenType.COMMA):
                     break
@@ -1450,57 +1319,69 @@ class Parser:
             name_token = self.expect(TokenType.IDENTIFIER)
             name = name_token.value
             self.expect(TokenType.LPAREN)
-            dim_ranges = []
-            while True:
-                first_negative = False
-                if self.match(TokenType.MINUS):
-                    self.advance()
-                    first_negative = True
-                if self.match(TokenType.INTEGER_LIT):
-                    first_token = self.advance()
-                    first_value = -first_token.value if first_negative else first_token.value
-                    if self.match(TokenType.COLON):
-                        self.advance()
-                        second_negative = False
-                        if self.match(TokenType.MINUS):
-                            self.advance()
-                            second_negative = True
-                        if not self.match(TokenType.INTEGER_LIT):
-                            raise SyntaxError(
-                                f"Ожидается целое число после ':' в диапазоне индексов на строке {self.current().line}:{self.current().col}"
-                            )
-                        second_token = self.advance()
-                        second_value = -second_token.value if second_negative else second_token.value
-                        dim_ranges.append((first_value, second_value))
-                    elif self.match(TokenType.COMMA, TokenType.RPAREN):
-                        dim_ranges.append((1, first_value))
-                    else:
-                        raise SyntaxError(
-                            f"Ожидается ':' или ',' после размера массива на строке {self.current().line}:{self.current().col}"
-                        )
-                else:
-                    raise SyntaxError(
-                        f"Ожидается целое число для размера массива на строке {self.current().line}:{self.current().col}"
-                    )
-                if not self.match(TokenType.COMMA):
-                    break
-                self.advance()
+            dim_ranges = self.parse_dimension_specs()
             if len(dim_ranges) > 7:
                 raise SyntaxError(
-                    f"Массив '{name}' имеет {len(dim_ranges)} измерений, максимум допускается 7 на строке {name_token.line}:{name_token.col}"
+                    f" '{name}'  {len(dim_ranges)} ,   7   {name_token.line}:{name_token.col}"
                 )
-            for i, (k, l) in enumerate(dim_ranges):
-                if k > l:
-                    raise SyntaxError(
-                        f"Неверный диапазон для измерения {i+1} массива '{name}': "
-                        f"начальное значение ({k}) больше конечного ({l}) на строке {name_token.line}:{name_token.col}"
-                    )
             self.expect(TokenType.RPAREN)
             names.append((name, dim_ranges))
             if not self.match(TokenType.COMMA):
                 break
             self.advance()
         return DimensionStatement(names=names)
+
+    def parse_dimension_specs(self) -> List[Tuple[object, object]]:
+        dim_ranges = []
+        while True:
+            lower_expr = self.parse_expression()
+            if self.match(TokenType.COLON):
+                self.advance()
+                upper_expr = self.parse_expression()
+                dim_ranges.append((lower_expr, upper_expr))
+            else:
+                dim_ranges.append((1, lower_expr))
+            if not self.match(TokenType.COMMA):
+                break
+            self.advance()
+        return dim_ranges
+
+    def parse_external_statement(self) -> 'ExternalStatement':
+        self.expect(TokenType.EXTERNAL)
+        names = []
+        while True:
+            names.append(self.expect(TokenType.IDENTIFIER).value)
+            if not self.match(TokenType.COMMA):
+                break
+            self.advance()
+        return ExternalStatement(names=names)
+
+    def parse_common_statement(self) -> 'CommonStatement':
+        self.expect(TokenType.COMMON)
+        blocks = []
+        while True:
+            block_name = ""
+            if self.match(TokenType.SLASH):
+                self.advance()
+                if self.match(TokenType.IDENTIFIER):
+                    block_name = self.advance().value
+                self.expect(TokenType.SLASH)
+            variables = []
+            while True:
+                name_token = self.expect(TokenType.IDENTIFIER)
+                variables.append(Variable(name=name_token.value, line=name_token.line, col=name_token.col))
+                if self.match(TokenType.COMMA) and self.peek().type == TokenType.IDENTIFIER:
+                    self.advance()
+                    continue
+                break
+            blocks.append((block_name, variables))
+            if self.match(TokenType.COMMA) and self.peek().type == TokenType.SLASH:
+                self.advance()
+                continue
+            if self.match(TokenType.SLASH):
+                continue
+            break
+        return CommonStatement(blocks=blocks)
 
     def parse_parameter_statement(self) -> 'ParameterStatement':
         self.expect(TokenType.PARAMETER)
@@ -1543,7 +1424,7 @@ class Parser:
             self.expect(TokenType.SLASH)
             values = []
             while True:
-                values.append(self.parse_expression())
+                values.append(self.parse_expression_until({TokenType.COMMA, TokenType.SLASH}))
                 if not self.match(TokenType.COMMA):
                     break
                 self.advance()
@@ -1554,6 +1435,36 @@ class Parser:
             self.advance()
         return DataStatement(items=items)
 
+    def parse_expression_until(self, stop_tokens: Set[TokenType]) -> Expression:
+        start = self.pos
+        depth = 0
+        while True:
+            current = self.current()
+            if current.type == TokenType.EOF:
+                break
+            if depth == 0 and current.type in stop_tokens:
+                break
+            if current.type == TokenType.LPAREN:
+                depth += 1
+            elif current.type == TokenType.RPAREN and depth > 0:
+                depth -= 1
+            self.pos += 1
+        expr_tokens = self.tokens[start:self.pos]
+        if not expr_tokens:
+            raise SyntaxError(
+                f"  {self.current().type.name} "
+                f"  {self.current().line}:{self.current().col}: {self.current().value}"
+            )
+        tail = self.current()
+        expr_parser = Parser(expr_tokens + [Token(type=TokenType.EOF, value=None, line=tail.line, col=tail.col)])
+        expr = expr_parser.parse_expression()
+        if expr_parser.current().type != TokenType.EOF:
+            raise SyntaxError(
+                f"  {expr_parser.current().type.name} "
+                f"  {expr_parser.current().line}:{expr_parser.current().col}: {expr_parser.current().value}"
+            )
+        return expr
+
     def parse_statement(self) -> Statement:
         self.skip_comments()
         label = None
@@ -1563,7 +1474,7 @@ class Parser:
             label = str(label_token.value)
             if not self.match(TokenType.IF, TokenType.DO, TokenType.PRINT, TokenType.READ,
                               TokenType.WRITE, TokenType.STOP, TokenType.GOTO, TokenType.CONTINUE,
-                              TokenType.DATA, TokenType.IDENTIFIER):
+                              TokenType.DATA, TokenType.CALL, TokenType.RETURN, TokenType.EXIT, TokenType.IDENTIFIER):
                 self.pos = saved_pos
                 label = None
         if self.match(TokenType.IF):
@@ -1613,6 +1524,11 @@ class Parser:
             stmt = ReturnStatement()
             if label: stmt.stmt_label = label
             return stmt
+        elif self.match(TokenType.EXIT):
+            self.advance()
+            stmt = ExitStatement()
+            if label: stmt.stmt_label = label
+            return stmt
         elif self.match(TokenType.IDENTIFIER):
             stmt = self.parse_assignment_or_label()
             if label: stmt.stmt_label = label
@@ -1622,10 +1538,10 @@ class Parser:
         else:
             current = self.current()
             raise SyntaxError(
-                f"[строка {current.line}, колонка {current.col}] Неожиданный токен {current.type.name}"
+                f"[ {current.line},  {current.col}]   {current.type.name}"
                 f"{f' ({current.value})' if current.value else ''}. "
-                f"В этой позиции не ожидается оператор или ключевое слово. "
-                f"Проверьте правильность синтаксиса. Возможно, пропущен оператор, неправильно закрыта конструкция или лишний символ."
+                f"        . "
+                f"  . ,  ,      ."
             )
 
     def parse_assignment_or_label(self) -> Statement:
@@ -1647,9 +1563,9 @@ class Parser:
         else:
             current = self.current()
             raise SyntaxError(
-                f"[строка {current.line}, колонка {current.col}] Ожидается оператор присваивания '=' после идентификатора '{name}'. "
-                f"Получено: {current.type.name}{f' ({current.value})' if current.value else ''}. "
-                f"Проверьте, что после имени переменной '{name}' стоит знак '=' для присваивания значения."
+                f"[ {current.line},  {current.col}]    '='   '{name}'. "
+                f": {current.type.name}{f' ({current.value})' if current.value else ''}. "
+                f",     '{name}'   '='   ."
             )
 
     def parse_assignment(self) -> Assignment:
@@ -1767,7 +1683,7 @@ class Parser:
                 self.advance()
                 if not self.match(TokenType.IF):
                     raise SyntaxError(
-                        f"Ожидается IF после END на строке {self.current().line}:{self.current().col}"
+                        f" IF  END   {self.current().line}:{self.current().col}"
                     )
                 self.advance()
             elif self.match(TokenType.IF) and self.pos > 0:
@@ -1777,11 +1693,11 @@ class Parser:
                     self.advance()
                 else:
                     raise SyntaxError(
-                        f"Ожидается ENDIF или END IF на строке {self.current().line}:{self.current().col}"
+                        f" ENDIF  END IF   {self.current().line}:{self.current().col}"
                     )
             else:
                 raise SyntaxError(
-                    f"Ожидается ENDIF или END IF на строке {self.current().line}:{self.current().col}"
+                    f" ENDIF  END IF   {self.current().line}:{self.current().col}"
                 )
             return IfStatement(condition=condition, then_body=then_body, elif_parts=elif_parts, else_body=else_body)
         else:
@@ -1836,7 +1752,7 @@ class Parser:
                 label_token = self.expect(TokenType.INTEGER_LIT)
                 if str(label_token.value) != label:
                     raise SyntaxError(
-                        f"Ожидается метка {label}, получено {label_token.value} на строке {label_token.line}:{label_token.col}"
+                        f"  {label},  {label_token.value}   {label_token.line}:{label_token.col}"
                     )
                 self.expect(TokenType.CONTINUE)
                 return LabeledDoWhile(label=label, condition=condition, body=body)
@@ -1848,7 +1764,7 @@ class Parser:
                     self.expect(TokenType.DO)
                 else:
                     raise SyntaxError(
-                        f"Ожидается ENDDO или END DO на строке {self.current().line}:{self.current().col}"
+                        f" ENDDO  END DO   {self.current().line}:{self.current().col}"
                     )
                 return DoWhile(condition=condition, body=body)
         else:
@@ -1881,7 +1797,7 @@ class Parser:
                 label_token = self.expect(TokenType.INTEGER_LIT)
                 if str(label_token.value) != label:
                     raise SyntaxError(
-                        f"Ожидается метка {label}, получено {label_token.value} на строке {label_token.line}:{label_token.col}"
+                        f"  {label},  {label_token.value}   {label_token.line}:{label_token.col}"
                     )
                 self.expect(TokenType.CONTINUE)
                 return LabeledDoLoop(label=label, var=var_name, start=start, end=end, step=step, body=body)
@@ -1901,7 +1817,7 @@ class Parser:
                     self.expect(TokenType.DO)
                 else:
                     raise SyntaxError(
-                        f"Ожидается ENDDO или END DO на строке {self.current().line}:{self.current().col}"
+                        f" ENDDO  END DO   {self.current().line}:{self.current().col}"
                     )
                 return DoLoop(var=var_name, start=start, end=end, step=step, body=body)
 
@@ -2002,13 +1918,18 @@ class Parser:
         while self.match(TokenType.IMPLICIT):
             declarations.append(self.parse_implicit_statement())
         while self.match(TokenType.INTEGER, TokenType.REAL, TokenType.LOGICAL, TokenType.COMPLEX, TokenType.CHARACTER,
-                         TokenType.DOUBLEPRECISION, TokenType.DIMENSION, TokenType.PARAMETER, TokenType.DATA):
+                         TokenType.DOUBLEPRECISION, TokenType.DIMENSION, TokenType.PARAMETER, TokenType.DATA,
+                         TokenType.EXTERNAL, TokenType.COMMON):
             if self.match(TokenType.DIMENSION):
                 declarations.append(self.parse_dimension_statement())
             elif self.match(TokenType.PARAMETER):
                 declarations.append(self.parse_parameter_statement())
             elif self.match(TokenType.DATA):
                 declarations.append(self.parse_data_statement())
+            elif self.match(TokenType.EXTERNAL):
+                declarations.append(self.parse_external_statement())
+            elif self.match(TokenType.COMMON):
+                declarations.append(self.parse_common_statement())
             else:
                 declarations.extend(self.parse_declaration())
             self.skip_comments()
@@ -2053,13 +1974,18 @@ class Parser:
         while self.match(TokenType.IMPLICIT):
             declarations.append(self.parse_implicit_statement())
         while self.match(TokenType.INTEGER, TokenType.REAL, TokenType.LOGICAL, TokenType.COMPLEX, TokenType.CHARACTER,
-                         TokenType.DOUBLEPRECISION, TokenType.DIMENSION, TokenType.PARAMETER, TokenType.DATA):
+                         TokenType.DOUBLEPRECISION, TokenType.DIMENSION, TokenType.PARAMETER, TokenType.DATA,
+                         TokenType.EXTERNAL, TokenType.COMMON):
             if self.match(TokenType.DIMENSION):
                 declarations.append(self.parse_dimension_statement())
             elif self.match(TokenType.PARAMETER):
                 declarations.append(self.parse_parameter_statement())
             elif self.match(TokenType.DATA):
                 declarations.append(self.parse_data_statement())
+            elif self.match(TokenType.EXTERNAL):
+                declarations.append(self.parse_external_statement())
+            elif self.match(TokenType.COMMON):
+                declarations.append(self.parse_common_statement())
             else:
                 declarations.extend(self.parse_declaration())
             self.skip_comments()
@@ -2131,9 +2057,9 @@ class Parser:
             if self.match(TokenType.PLUS, TokenType.MINUS, TokenType.STAR, TokenType.SLASH):
                 next_op = self.current()
                 raise SyntaxError(
-                    f"Два знака арифметической операции не могут стоять рядом: "
-                    f"'{op_token.value}' и '{next_op.value}' на строке {next_op.line}:{next_op.col}. "
-                    f"Используйте скобки, например: X/(-Y) вместо X/-Y"
+                    f"       : "
+                    f"'{op_token.value}'  '{next_op.value}'   {next_op.line}:{next_op.col}. "
+                    f" , : X/(-Y)  X/-Y"
                 )
             right = self.parse_concat_expression()
             left = BinaryOp(left=left, op=op_token.value,
@@ -2156,9 +2082,9 @@ class Parser:
             if self.match(TokenType.PLUS, TokenType.MINUS, TokenType.STAR, TokenType.SLASH):
                 next_op = self.current()
                 raise SyntaxError(
-                    f"Два знака арифметической операции не могут стоять рядом: "
-                    f"'{op_token.value}' и '{next_op.value}' на строке {next_op.line}:{next_op.col}. "
-                    f"Используйте скобки, например: X/(-Y) вместо X/-Y"
+                    f"       : "
+                    f"'{op_token.value}'  '{next_op.value}'   {next_op.line}:{next_op.col}. "
+                    f" , : X/(-Y)  X/-Y"
                 )
             right = self.parse_power_expression()
             left = BinaryOp(left=left, op=op_token.value,
@@ -2180,9 +2106,9 @@ class Parser:
             if self.match(TokenType.PLUS, TokenType.MINUS, TokenType.STAR, TokenType.SLASH):
                 next_op = self.current()
                 raise SyntaxError(
-                    f"Два знака арифметической операции не могут стоять рядом: "
-                    f"'{op_token.value}' и '{next_op.value}' на строке {next_op.line}:{next_op.col}. "
-                    f"Используйте скобки, например: X/(-Y) вместо X/-Y"
+                    f"       : "
+                    f"'{op_token.value}'  '{next_op.value}'   {next_op.line}:{next_op.col}. "
+                    f" , : X/(-Y)  X/-Y"
                 )
             expr = self.parse_unary_expression()
             return UnaryOp(op=op_token.value, operand=expr)
@@ -2270,8 +2196,8 @@ class Parser:
                 return ArrayRef(name=name_token.value, indices=indices, line=name_token.line, col=name_token.col)
             return Variable(name=name_token.value, line=name_token.line, col=name_token.col)
         raise SyntaxError(
-            f"Неожиданный токен {self.current().type.name} "
-            f"на строке {self.current().line}:{self.current().col}: {self.current().value}"
+            f"  {self.current().type.name} "
+            f"  {self.current().line}:{self.current().col}: {self.current().value}"
         )
 
 
@@ -2301,13 +2227,16 @@ def pretty_print_ast(node: ASTNode, indent: int = 0) -> str:
     elif isinstance(node, DimensionStatement):
         result = f"{prefix}DIMENSION:\n"
         for name, dim_ranges in node.names:
-            def format_dim(dim_range: Tuple[int, int]) -> str:
-                k, l = dim_range
-                if k == 1:
-                    return str(l)
-                return f"{k}:{l}"
-            dims_str = "(" + ", ".join(format_dim(d) for d in dim_ranges) + ")"
+            dims_str = _format_dimension_list(dim_ranges)
             result += f"{prefix}  {name}{dims_str}\n"
+        return result
+    elif isinstance(node, ExternalStatement):
+        return f"{prefix}EXTERNAL: {', '.join(node.names)}\n"
+    elif isinstance(node, CommonStatement):
+        result = f"{prefix}COMMON:\n"
+        for block_name, variables in node.blocks:
+            label = f"/{block_name}/" if block_name else "(blank)"
+            result += f"{prefix}  {label}: {', '.join(str(var) for var in variables)}\n"
         return result
     elif isinstance(node, ParameterStatement):
         result = f"{prefix}PARAMETER:\n"
@@ -2357,6 +2286,21 @@ def pretty_print_ast(node: ASTNode, indent: int = 0) -> str:
             result += indices_str
         result += "\n"
         result += f"{prefix}  value: {pretty_print_ast(node.value, indent + 1)}"
+        return result
+    elif isinstance(node, ExitStatement):
+        return f"{prefix}EXIT\n"
+    elif isinstance(node, ParallelDoLoop):
+        result = f"{prefix}PARALLEL DO LOOP:\n"
+        result += f"{prefix}  variable: {node.var}\n"
+        result += f"{prefix}  grain: {node.grain}\n"
+        result += f"{prefix}  start: {pretty_print_ast(node.start, indent + 1)}"
+        result += f"{prefix}  end: {pretty_print_ast(node.end, indent + 1)}"
+        if node.step:
+            result += f"{prefix}  step: {pretty_print_ast(node.step, indent + 1)}"
+        result += f"{prefix}  body:\n"
+        for stmt in node.body:
+            result += pretty_print_ast(stmt, indent + 2)
+        result += f"{prefix}END PARALLEL DO\n"
         return result
     elif isinstance(node, DoLoop):
         result = f"{prefix}DO LOOP:\n"

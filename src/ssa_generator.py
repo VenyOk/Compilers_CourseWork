@@ -6,7 +6,7 @@ from src.core import (
     StringLiteral, LogicalLiteral, FunctionCall, Expression,
     ReturnStatement, StopStatement, DoWhile, LabeledDoLoop, LabeledDoWhile,
     SimpleIfStatement, ArrayRef, DimensionStatement, GotoStatement, ContinueStatement,
-    Subroutine, FunctionDef
+    Subroutine, FunctionDef, ExitStatement
 )
 
 
@@ -72,6 +72,8 @@ class SSAGenerator:
             pass
         elif isinstance(stmt, ContinueStatement):
             pass
+        elif isinstance(stmt, ExitStatement):
+            self.instructions.append("exit")
 
     def _process_assignment(self, assign: Assignment):
         target = assign.target

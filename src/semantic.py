@@ -9,7 +9,7 @@ from src.core import (
     DoWhile, LabeledDoWhile, ArrayRef, DimensionStatement, ParameterStatement,
     DataStatement, DataItem, ArithmeticIfStatement, ImplicitNone, ImplicitStatement, ImplicitRule,
     Subroutine, FunctionDef, ReturnStatement, ExternalStatement, CommonStatement,
-    GotoStatement, ContinueStatement, StopStatement
+    GotoStatement, ContinueStatement, StopStatement, ExitStatement
 )
 
 
@@ -30,6 +30,7 @@ class VariableInfo:
     dimensions: List[Tuple[int, int]] = None
     is_parameter: bool = False
     value: Optional[object] = None
+    explicitly_declared: bool = False
 
     def __post_init__(self):
         if self.dimensions is None:
@@ -50,6 +51,7 @@ class SemanticAnalyzer:
         self.current_scope = "global"
         self.implicit_none = False
         self.implicit_rules: Dict[str, Tuple[TypeKind, Optional[int]]] = {}
+        self.loop_nesting = 0
         self.builtin_functions = {
             "REAL": (TypeKind.REAL, [TypeKind.INTEGER, TypeKind.REAL, TypeKind.LOGICAL]),
             "INT": (TypeKind.INTEGER, [TypeKind.REAL, TypeKind.INTEGER, TypeKind.LOGICAL]),
@@ -101,6 +103,7 @@ class SemanticAnalyzer:
 
     def analyze(self, ast: Program) -> bool:
         try:
+            self.loop_nesting = 0
             type_map = {
                 'INTEGER': TypeKind.INTEGER,
                 'REAL': TypeKind.REAL,
@@ -171,42 +174,62 @@ class SemanticAnalyzer:
             elif isinstance(decl, Declaration):
                 type_kind = TypeKind[decl.type] if decl.type in TypeKind.__members__ else TypeKind.UNKNOWN
                 for name, dims in decl.names:
-                    if name in self.symbol_table:
-                        var_info = self.symbol_table[name]
-                        existing_type = var_info.type_kind.value if var_info.type_kind else "неизвестный"
-                        if var_info.is_parameter:
-                            var_info.type_kind = type_kind
-                            continue
-                        if var_info.is_array:
-                            var_info.type_kind = type_kind
-                            continue
-                        if not var_info.is_parameter and not var_info.is_array:
-                            var_info.type_kind = type_kind
-                            if dims is not None:
-                                var_info.is_array = True
-                                var_info.dimensions = dims
-                            continue
+                    resolved_dims = self._resolve_dimension_ranges(dims, decl, name) if dims is not None else None
+                    if name not in self.symbol_table:
+                        self.symbol_table[name] = VariableInfo(
+                            name=name,
+                            type_kind=type_kind,
+                            is_array=resolved_dims is not None,
+                            dimensions=resolved_dims or [],
+                            explicitly_declared=True
+                        )
+                        continue
+                    var_info = self.symbol_table[name]
+                    existing_type = var_info.type_kind.value if var_info.type_kind else "неизвестный"
+                    if var_info.explicitly_declared:
                         error_msg = self._format_error(
                             f"Переменная '{name}' уже объявлена как {existing_type}",
                             node=decl,
                             context=f"повторное объявление типа {decl.type}",
-                            suggestion=f"Удалите одно из объявлений или используйте другое имя. Переменная '{name}' уже существует"
+                            suggestion=f"Оставьте только одно явное объявление для переменной '{name}'"
                         )
                         self.errors.append(error_msg)
-                    else:
-                        var_info = VariableInfo(
-                            name=name,
-                            type_kind=type_kind,
-                            is_array=dims is not None,
-                            dimensions=dims or []
+                        continue
+                    if var_info.is_parameter and resolved_dims is not None:
+                        error_msg = self._format_error(
+                            f"Константа PARAMETER '{name}' не может быть объявлена как массив",
+                            node=decl,
+                            context=f"объявление типа {decl.type}",
+                            suggestion=f"Уберите размерности у '{name}' или используйте обычную переменную вместо PARAMETER"
                         )
-                        self.symbol_table[name] = var_info
+                        self.errors.append(error_msg)
+                        continue
+                    if resolved_dims is not None:
+                        if var_info.is_array and var_info.dimensions and var_info.dimensions != resolved_dims:
+                            old_dims = ", ".join(f"{left}:{right}" for left, right in var_info.dimensions)
+                            new_dims = ", ".join(f"{left}:{right}" for left, right in resolved_dims)
+                            error_msg = self._format_error(
+                                f"Массив '{name}' уже объявлен с другими размерностями",
+                                node=decl,
+                                context=f"было: [{old_dims}], получено: [{new_dims}]",
+                                suggestion=f"Используйте одинаковые размерности для массива '{name}' во всех объявлениях"
+                            )
+                            self.errors.append(error_msg)
+                            continue
+                        var_info.is_array = True
+                        var_info.dimensions = resolved_dims
+                    var_info.type_kind = type_kind
+                    var_info.explicitly_declared = True
             elif isinstance(decl, DimensionStatement):
                 self._analyze_dimension_statement(decl)
             elif isinstance(decl, ParameterStatement):
                 self._analyze_parameter_statement(decl)
             elif isinstance(decl, DataStatement):
                 self._analyze_data_statement(decl)
+            elif isinstance(decl, ExternalStatement):
+                self._analyze_external_statement(decl)
+            elif isinstance(decl, CommonStatement):
+                self._analyze_common_statement(decl)
 
     def _analyze_statements(self, statements: List[Statement]):
         for stmt in statements:
@@ -232,6 +255,16 @@ class SemanticAnalyzer:
                 self._analyze_call_statement(stmt)
             elif isinstance(stmt, DataStatement):
                 self._analyze_data_statement(stmt)
+            elif isinstance(stmt, GotoStatement):
+                self._analyze_goto_statement(stmt)
+            elif isinstance(stmt, ContinueStatement):
+                self._analyze_continue_statement(stmt)
+            elif isinstance(stmt, ReturnStatement):
+                self._analyze_return_statement(stmt)
+            elif isinstance(stmt, StopStatement):
+                self._analyze_stop_statement(stmt)
+            elif isinstance(stmt, ExitStatement):
+                self._analyze_exit_statement(stmt)
 
     def _analyze_assignment(self, stmt: Assignment):
         if stmt.target not in self.symbol_table:
@@ -277,7 +310,7 @@ class SemanticAnalyzer:
                 f"Попытка изменить константу PARAMETER '{stmt.target}'",
                 node=stmt,
                 context="присваивание значения",
-                suggestion=f"PARAMETER '{stmt.target}' является константой и не может быть изменён. Используйте обычную переменную вместо PARAMETER"
+                suggestion=f"PARAMETER '{stmt.target}' является константой и не может быть изменён. спользуйте обычную переменную вместо PARAMETER"
             )
             self.errors.append(error_msg)
         if stmt.indices:
@@ -296,7 +329,7 @@ class SemanticAnalyzer:
                     f"Неверное количество индексов для массива '{stmt.target}'",
                     node=stmt,
                     context=f"массив имеет {len(var_info.dimensions)} измерений [{dims_str}], использовано {len(stmt.indices)} индексов",
-                    suggestion=f"Используйте {len(var_info.dimensions)} индексов для доступа к массиву '{stmt.target}'"
+                    suggestion=f"спользуйте {len(var_info.dimensions)} индексов для доступа к массиву '{stmt.target}'"
                 )
                 self.errors.append(error_msg)
             else:
@@ -304,10 +337,10 @@ class SemanticAnalyzer:
                     idx_type = self._infer_expression_type(idx)
                     if idx_type != TypeKind.INTEGER and idx_type != TypeKind.UNKNOWN:
                         error_msg = self._format_error(
-                            f"Индекс массива должен быть INTEGER, получен тип {idx_type.value}",
+                            f"ндекс массива должен быть INTEGER, получен тип {idx_type.value}",
                             node=idx if hasattr(idx, 'line') else stmt,
                             context=f"индекс {i+1} массива '{stmt.target}'",
-                            suggestion=f"Используйте целочисленное выражение для индекса (например: INTEGER переменную или целочисленную константу)"
+                            suggestion=f"спользуйте целочисленное выражение для индекса (например: INTEGER переменную или целочисленную константу)"
                         )
                         self.errors.append(error_msg)
         expr_type = self._infer_expression_type(stmt.value)
@@ -336,7 +369,7 @@ class SemanticAnalyzer:
                     f"Переменная цикла '{stmt.var}' должна быть типа INTEGER",
                     node=stmt,
                     context=f"объявлена как {var_info.type_kind.value}",
-                    suggestion=f"Измените тип переменной '{stmt.var}' на INTEGER"
+                    suggestion=f"змените тип переменной '{stmt.var}' на INTEGER"
                 )
                 self.errors.append(error_msg)
         start_type = self._infer_expression_type(stmt.start)
@@ -346,7 +379,7 @@ class SemanticAnalyzer:
                 f"Начальное значение цикла DO должно быть типа INTEGER",
                 node=stmt.start if hasattr(stmt.start, 'line') else stmt,
                 context=f"получен тип {start_type.value}",
-                suggestion="Используйте целочисленное выражение для начального значения цикла"
+                suggestion="спользуйте целочисленное выражение для начального значения цикла"
             )
             self.errors.append(error_msg)
         if end_type != TypeKind.INTEGER:
@@ -354,7 +387,7 @@ class SemanticAnalyzer:
                 f"Конечное значение цикла DO должно быть типа INTEGER",
                 node=stmt.end if hasattr(stmt.end, 'line') else stmt,
                 context=f"получен тип {end_type.value}",
-                suggestion="Используйте целочисленное выражение для конечного значения цикла"
+                suggestion="спользуйте целочисленное выражение для конечного значения цикла"
             )
             self.errors.append(error_msg)
         if stmt.step:
@@ -364,26 +397,12 @@ class SemanticAnalyzer:
                     f"Шаг цикла DO должен быть типа INTEGER",
                     node=stmt.step if hasattr(stmt.step, 'line') else stmt,
                     context=f"получен тип {step_type.value}",
-                    suggestion="Используйте целочисленное выражение для шага цикла"
+                    suggestion="спользуйте целочисленное выражение для шага цикла"
                 )
                 self.errors.append(error_msg)
-        if not self._is_constant_expression(stmt.start):
-            error_msg = self._format_error(
-                f"Начальное значение цикла DO должно быть константным выражением",
-                node=stmt.start if hasattr(stmt.start, 'line') else stmt,
-                context="цикл DO",
-                suggestion="Используйте константу или выражение, вычисляемое на этапе компиляции (например: число, PARAMETER)"
-            )
-            self.errors.append(error_msg)
-        if stmt.step and not self._is_constant_expression(stmt.step):
-            error_msg = self._format_error(
-                f"Шаг цикла DO должен быть константным выражением",
-                node=stmt.step if hasattr(stmt.step, 'line') else stmt,
-                context="цикл DO",
-                suggestion="Используйте константу или выражение, вычисляемое на этапе компиляции (например: число, PARAMETER)"
-            )
-            self.errors.append(error_msg)
+        self.loop_nesting += 1
         self._analyze_statements(stmt.body)
+        self.loop_nesting -= 1
 
     def _analyze_labeled_do_loop(self, stmt: LabeledDoLoop):
         if stmt.var not in self.symbol_table:
@@ -401,7 +420,7 @@ class SemanticAnalyzer:
                     f"Переменная цикла '{stmt.var}' должна быть типа INTEGER",
                     node=stmt,
                     context=f"объявлена как {var_info.type_kind.value}, метка {stmt.label}",
-                    suggestion=f"Измените тип переменной '{stmt.var}' на INTEGER"
+                    suggestion=f"змените тип переменной '{stmt.var}' на INTEGER"
                 )
                 self.errors.append(error_msg)
         start_type = self._infer_expression_type(stmt.start)
@@ -411,7 +430,7 @@ class SemanticAnalyzer:
                 f"Начальное значение цикла DO должно быть типа INTEGER",
                 node=stmt.start if hasattr(stmt.start, 'line') else stmt,
                 context=f"цикл с меткой {stmt.label}, получен тип {start_type.value}",
-                suggestion="Используйте целочисленное выражение для начального значения цикла"
+                suggestion="спользуйте целочисленное выражение для начального значения цикла"
             )
             self.errors.append(error_msg)
         if end_type != TypeKind.INTEGER:
@@ -419,7 +438,7 @@ class SemanticAnalyzer:
                 f"Конечное значение цикла DO должно быть типа INTEGER",
                 node=stmt.end if hasattr(stmt.end, 'line') else stmt,
                 context=f"цикл с меткой {stmt.label}, получен тип {end_type.value}",
-                suggestion="Используйте целочисленное выражение для конечного значения цикла"
+                suggestion="спользуйте целочисленное выражение для конечного значения цикла"
             )
             self.errors.append(error_msg)
         if stmt.step:
@@ -429,26 +448,12 @@ class SemanticAnalyzer:
                     f"Шаг цикла DO должен быть типа INTEGER",
                     node=stmt.step if hasattr(stmt.step, 'line') else stmt,
                     context=f"цикл с меткой {stmt.label}, получен тип {step_type.value}",
-                    suggestion="Используйте целочисленное выражение для шага цикла"
+                    suggestion="спользуйте целочисленное выражение для шага цикла"
                 )
                 self.errors.append(error_msg)
-        if not self._is_constant_expression(stmt.start):
-            error_msg = self._format_error(
-                f"Начальное значение цикла DO должно быть константным выражением",
-                node=stmt.start if hasattr(stmt.start, 'line') else stmt,
-                context=f"цикл с меткой {stmt.label}",
-                suggestion="Используйте константу или выражение, вычисляемое на этапе компиляции (например: число, PARAMETER)"
-            )
-            self.errors.append(error_msg)
-        if stmt.step and not self._is_constant_expression(stmt.step):
-            error_msg = self._format_error(
-                f"Шаг цикла DO должен быть константным выражением",
-                node=stmt.step if hasattr(stmt.step, 'line') else stmt,
-                context=f"цикл с меткой {stmt.label}",
-                suggestion="Используйте константу или выражение, вычисляемое на этапе компиляции (например: число, PARAMETER)"
-            )
-            self.errors.append(error_msg)
+        self.loop_nesting += 1
         self._analyze_statements(stmt.body)
+        self.loop_nesting -= 1
 
     def _analyze_do_while(self, stmt):
         cond_type = self._infer_expression_type(stmt.condition)
@@ -458,10 +463,12 @@ class SemanticAnalyzer:
                 node=stmt.condition if hasattr(
                     stmt.condition, 'line') else stmt,
                 context=f"получен тип {cond_type.value}",
-                suggestion="Используйте логическое выражение или переменную типа LOGICAL (например: .TRUE., .FALSE., или сравнение)"
+                suggestion="спользуйте логическое выражение или переменную типа LOGICAL (например: .TRUE., .FALSE., или сравнение)"
             )
             self.errors.append(error_msg)
+        self.loop_nesting += 1
         self._analyze_statements(stmt.body)
+        self.loop_nesting -= 1
 
     def _analyze_simple_if_statement(self, stmt: SimpleIfStatement):
         cond_type = self._infer_expression_type(stmt.condition)
@@ -471,7 +478,7 @@ class SemanticAnalyzer:
                 node=stmt.condition if hasattr(
                     stmt.condition, 'line') else stmt,
                 context=f"простой IF, получен тип {cond_type.value}",
-                suggestion="Используйте логическое выражение или переменную типа LOGICAL (например: .TRUE., .FALSE., или сравнение)"
+                suggestion="спользуйте логическое выражение или переменную типа LOGICAL (например: .TRUE., .FALSE., или сравнение)"
             )
             self.errors.append(error_msg)
         self._analyze_statements([stmt.statement])
@@ -484,7 +491,7 @@ class SemanticAnalyzer:
                 node=stmt.condition if hasattr(
                     stmt.condition, 'line') else stmt,
                 context=f"IF-THEN-ELSE, получен тип {cond_type.value}",
-                suggestion="Используйте логическое выражение или переменную типа LOGICAL (например: .TRUE., .FALSE., или сравнение)"
+                suggestion="спользуйте логическое выражение или переменную типа LOGICAL (например: .TRUE., .FALSE., или сравнение)"
             )
             self.errors.append(error_msg)
         self._analyze_statements(stmt.then_body)
@@ -495,7 +502,7 @@ class SemanticAnalyzer:
                     f"Условие ELSEIF должно быть типа LOGICAL",
                     node=elif_cond if hasattr(elif_cond, 'line') else stmt,
                     context=f"ELSEIF #{i} в IF-THEN-ELSE, получен тип {elif_type.value}",
-                    suggestion="Используйте логическое выражение или переменную типа LOGICAL (например: .TRUE., .FALSE., или сравнение)"
+                    suggestion="спользуйте логическое выражение или переменную типа LOGICAL (например: .TRUE., .FALSE., или сравнение)"
                 )
                 self.errors.append(error_msg)
             self._analyze_statements(elif_body)
@@ -510,7 +517,7 @@ class SemanticAnalyzer:
                 node=stmt.condition if hasattr(
                     stmt.condition, 'line') else stmt,
                 context=f"арифметический IF (метки: {stmt.label_neg}, {stmt.label_zero}, {stmt.label_pos}), получен тип {cond_type.value}",
-                suggestion="Используйте числовое выражение (INTEGER или REAL) для арифметического IF"
+                suggestion="спользуйте числовое выражение (INTEGER или REAL) для арифметического IF"
             )
             self.errors.append(error_msg)
 
@@ -556,7 +563,7 @@ class SemanticAnalyzer:
                             f"Попытка чтения в константу PARAMETER '{item}' через оператор READ",
                             node=stmt,
                             context=f"PARAMETER '{item}' является константой",
-                            suggestion=f"Используйте обычную переменную вместо PARAMETER '{item}' для чтения значений"
+                            suggestion=f"спользуйте обычную переменную вместо PARAMETER '{item}' для чтения значений"
                         )
                         self.errors.append(error_msg)
         elif isinstance(stmt, WriteStatement):
@@ -656,7 +663,7 @@ class SemanticAnalyzer:
                     f"Неверное количество индексов для массива '{expr.name}'",
                     node=expr,
                     context=f"массив имеет {len(var_info.dimensions)} измерений [{dims_str}], использовано {len(expr.indices)} индексов",
-                    suggestion=f"Используйте {len(var_info.dimensions)} индексов для доступа к массиву '{expr.name}'"
+                    suggestion=f"спользуйте {len(var_info.dimensions)} индексов для доступа к массиву '{expr.name}'"
                 )
                 self.errors.append(error_msg)
             else:
@@ -664,10 +671,10 @@ class SemanticAnalyzer:
                     idx_type = self._infer_expression_type(idx)
                     if idx_type != TypeKind.INTEGER and idx_type != TypeKind.UNKNOWN:
                         error_msg = self._format_error(
-                            f"Индекс массива должен быть типа INTEGER",
+                            f"ндекс массива должен быть типа INTEGER",
                             node=idx if hasattr(idx, 'line') else expr,
                             context=f"индекс {i+1} массива '{expr.name}', получен тип {idx_type.value}",
-                            suggestion="Используйте целочисленное выражение для индекса (например: INTEGER переменную или целочисленную константу)"
+                            suggestion="спользуйте целочисленное выражение для индекса (например: INTEGER переменную или целочисленную константу)"
                         )
                         self.errors.append(error_msg)
             return var_info.type_kind
@@ -689,7 +696,7 @@ class SemanticAnalyzer:
                         f"Операция конкатенации '//' требует операндов типа CHARACTER",
                         node=expr,
                         context=f"получено {left_type.value} и {right_type.value}",
-                        suggestion="Используйте строковые константы или переменные типа CHARACTER для операции конкатенации"
+                        suggestion="спользуйте строковые константы или переменные типа CHARACTER для операции конкатенации"
                     )
                     self.errors.append(error_msg)
                 return TypeKind.UNKNOWN
@@ -700,7 +707,7 @@ class SemanticAnalyzer:
                     f"Логическая операция '{expr.op}' требует операндов типа LOGICAL",
                     node=expr,
                     context=f"получено {left_type.value} и {right_type.value}",
-                    suggestion="Используйте логические выражения или переменные типа LOGICAL (например: .TRUE., .FALSE., или сравнения)"
+                    suggestion="спользуйте логические выражения или переменные типа LOGICAL (например: .TRUE., .FALSE., или сравнения)"
                 )
                 self.errors.append(error_msg)
             return TypeKind.LOGICAL
@@ -710,7 +717,7 @@ class SemanticAnalyzer:
                     f"Логическая операция '{expr.op}' требует операндов типа LOGICAL",
                     node=expr,
                     context=f"получено {left_type.value} и {right_type.value}",
-                    suggestion="Используйте логические выражения или переменные типа LOGICAL (например: .TRUE., .FALSE., или сравнения)"
+                    suggestion="спользуйте логические выражения или переменные типа LOGICAL (например: .TRUE., .FALSE., или сравнения)"
                 )
                 self.errors.append(error_msg)
             return TypeKind.LOGICAL
@@ -720,7 +727,7 @@ class SemanticAnalyzer:
                     f"Операция сравнения '{expr.op}' требует совместимых типов",
                     node=expr,
                     context=f"получено {left_type.value} и {right_type.value}",
-                    suggestion="Используйте операнды совместимых типов для сравнения (числовые типы с числовыми, логические с логическими, строковые со строковыми)"
+                    suggestion="спользуйте операнды совместимых типов для сравнения (числовые типы с числовыми, логические с логическими, строковые со строковыми)"
                 )
                 self.errors.append(error_msg)
             return TypeKind.LOGICAL
@@ -732,7 +739,7 @@ class SemanticAnalyzer:
                         f"Арифметическая операция '{expr.op}' требует числовых операндов",
                         node=expr,
                         context=f"получено {left_type.value} и {right_type.value}",
-                        suggestion="Используйте числовые выражения или переменные (INTEGER, REAL или COMPLEX) для арифметических операций"
+                        suggestion="спользуйте числовые выражения или переменные (INTEGER, REAL или COMPLEX) для арифметических операций"
                     )
                     self.errors.append(error_msg)
                 return TypeKind.UNKNOWN
@@ -755,7 +762,7 @@ class SemanticAnalyzer:
                     f"Операция '.NOT.' требует операнда типа LOGICAL",
                     node=expr,
                     context=f"получен тип {operand_type.value}",
-                    suggestion="Используйте логическое выражение или переменную типа LOGICAL (например: .TRUE., .FALSE., или сравнение)"
+                    suggestion="спользуйте логическое выражение или переменную типа LOGICAL (например: .TRUE., .FALSE., или сравнение)"
                 )
                 self.errors.append(error_msg)
             return TypeKind.LOGICAL
@@ -775,7 +782,7 @@ class SemanticAnalyzer:
                         f"Неверное количество индексов для массива '{func_name}'",
                         node=expr,
                         context=f"массив имеет {len(var_info.dimensions)} измерений [{dims_str}], использовано {len(expr.args)} индексов",
-                        suggestion=f"Используйте {len(var_info.dimensions)} индексов для доступа к массиву '{func_name}'"
+                        suggestion=f"спользуйте {len(var_info.dimensions)} индексов для доступа к массиву '{func_name}'"
                     )
                     self.errors.append(error_msg)
                 else:
@@ -783,10 +790,10 @@ class SemanticAnalyzer:
                         idx_type = self._infer_expression_type(idx)
                         if idx_type != TypeKind.INTEGER and idx_type != TypeKind.UNKNOWN:
                             error_msg = self._format_error(
-                                f"Индекс массива должен быть типа INTEGER",
+                                f"ндекс массива должен быть типа INTEGER",
                                 node=idx if hasattr(idx, 'line') else expr,
                                 context=f"индекс {i+1} массива '{func_name}', получен тип {idx_type.value}",
-                                suggestion="Используйте целочисленное выражение для индекса (например: INTEGER переменную или целочисленную константу)"
+                                suggestion="спользуйте целочисленное выражение для индекса (например: INTEGER переменную или целочисленную константу)"
                             )
                             self.errors.append(error_msg)
                 return var_info.type_kind
@@ -803,7 +810,7 @@ class SemanticAnalyzer:
                                 f"Неверный тип аргумента {i+1} функции '{func_name}'",
                                 node=arg if hasattr(arg, 'line') else expr,
                                 context=f"ожидается {expected_str}, получен {arg_type.value}",
-                                suggestion=f"Используйте аргумент типа {expected_str} для функции '{func_name}'"
+                                suggestion=f"спользуйте аргумент типа {expected_str} для функции '{func_name}'"
                             )
                             self.errors.append(error_msg)
             if ret_type is None:
@@ -856,22 +863,23 @@ class SemanticAnalyzer:
 
     def _analyze_dimension_statement(self, stmt: DimensionStatement):
         for name, dim_ranges in stmt.names:
+            resolved_dim_ranges = self._resolve_dimension_ranges(dim_ranges, stmt, name)
             if len(dim_ranges) > 7:
                 error_msg = self._format_error(
                     f"Массив '{name}' имеет слишком много измерений",
                     node=stmt,
                     context=f"получено {len(dim_ranges)} измерений, максимум допускается 7",
-                    suggestion=f"Используйте не более 7 измерений для массива '{name}'"
+                    suggestion=f"спользуйте не более 7 измерений для массива '{name}'"
                 )
                 self.errors.append(error_msg)
                 continue
-            for i, (k, l) in enumerate(dim_ranges):
+            for i, (k, l) in enumerate(resolved_dim_ranges):
                 if k > l:
                     error_msg = self._format_error(
                         f"Неверный диапазон для измерения {i+1} массива '{name}'",
                         node=stmt,
                         context=f"начальное значение ({k}) больше конечного ({l})",
-                        suggestion=f"Исправьте диапазон измерения {i+1}: начальное значение должно быть меньше или равно конечному (например: {l}:{k} → {k}:{l})"
+                        suggestion=f"справьте диапазон измерения {i+1}: начальное значение должно быть меньше или равно конечному (например: {l}:{k} → {k}:{l})"
                     )
                     self.errors.append(error_msg)
             if name in self.symbol_table:
@@ -879,9 +887,9 @@ class SemanticAnalyzer:
                 existing_dims_str = ", ".join([f"{d[0]}:{d[1]}" if isinstance(
                     d, tuple) else str(d) for d in var_info.dimensions])
                 new_dims_str = ", ".join([f"{d[0]}:{d[1]}" if isinstance(
-                    d, tuple) else str(d) for d in dim_ranges])
+                    d, tuple) else str(d) for d in resolved_dim_ranges])
                 if var_info.is_array:
-                    if var_info.dimensions != dim_ranges:
+                    if var_info.dimensions != resolved_dim_ranges:
                         error_msg = self._format_error(
                             f"Массив '{name}' уже объявлен с другими размерностями",
                             node=stmt,
@@ -901,12 +909,12 @@ class SemanticAnalyzer:
                         f"Переменная '{name}' уже объявлена как PARAMETER, объявление в DIMENSION недопустимо",
                         node=stmt,
                         context=f"PARAMETER '{name}' уже существует",
-                        suggestion=f"Нельзя объявить PARAMETER '{name}' как массив. Используйте обычную переменную или удалите объявление PARAMETER"
+                        suggestion=f"Нельзя объявить PARAMETER '{name}' как массив. спользуйте обычную переменную или удалите объявление PARAMETER"
                     )
                     self.errors.append(error_msg)
                 else:
                     var_info.is_array = True
-                    var_info.dimensions = dim_ranges
+                    var_info.dimensions = resolved_dim_ranges
             else:
                 if not self.implicit_none:
                     implicit_type, type_size = self._get_implicit_type(name)
@@ -915,7 +923,7 @@ class SemanticAnalyzer:
                             name=name,
                             type_kind=implicit_type,
                             is_array=True,
-                            dimensions=dim_ranges
+                            dimensions=resolved_dim_ranges
                         )
                         self.symbol_table[name] = var_info
                         rule_source = "явным правилом IMPLICIT" if name[0].upper(
@@ -929,7 +937,7 @@ class SemanticAnalyzer:
                             name=name,
                             type_kind=TypeKind.UNKNOWN,
                             is_array=True,
-                            dimensions=dim_ranges
+                            dimensions=resolved_dim_ranges
                         )
                         self.symbol_table[name] = var_info
                         self.warnings.append(
@@ -1059,7 +1067,7 @@ class SemanticAnalyzer:
                     f"Выражение для PARAMETER '{name}' должно быть константным",
                     node=expr if hasattr(expr, 'line') else stmt,
                     context="объявление PARAMETER",
-                    suggestion="Используйте только константы, числа или ранее объявленные параметры в выражении для PARAMETER"
+                    suggestion="спользуйте только константы, числа или ранее объявленные параметры в выражении для PARAMETER"
                 )
                 self.errors.append(error_msg)
                 continue
@@ -1095,7 +1103,7 @@ class SemanticAnalyzer:
                             f"Не удалось определить тип константы '{name}' в PARAMETER",
                             node=expr if hasattr(expr, 'line') else stmt,
                             context="объявление PARAMETER",
-                            suggestion="Используйте явную константу известного типа (целое число, вещественное число, строку или логическое значение)"
+                            suggestion="спользуйте явную константу известного типа (целое число, вещественное число, строку или логическое значение)"
                         )
                         self.errors.append(error_msg)
                         expr_type = TypeKind.INTEGER
@@ -1141,7 +1149,7 @@ class SemanticAnalyzer:
                         f"Попытка инициализировать константу PARAMETER '{var_name}' через оператор DATA",
                         node=data_item if hasattr(data_item, 'line') else stmt,
                         context=f"PARAMETER '{var_name}' является константой",
-                        suggestion=f"PARAMETER не может быть инициализирован через DATA. Используйте обычную переменную или инициализируйте PARAMETER при объявлении"
+                        suggestion=f"PARAMETER не может быть инициализирован через DATA. спользуйте обычную переменную или инициализируйте PARAMETER при объявлении"
                     )
                     self.errors.append(error_msg)
                     continue
@@ -1164,7 +1172,7 @@ class SemanticAnalyzer:
                             node=data_item if hasattr(
                                 data_item, 'line') else stmt,
                             context=f"массив имеет {len(var_info.dimensions)} измерений [{dims_str}], использовано {len(indices)} индексов",
-                            suggestion=f"Используйте {len(var_info.dimensions)} индексов для доступа к массиву '{var_name}'"
+                            suggestion=f"спользуйте {len(var_info.dimensions)} индексов для доступа к массиву '{var_name}'"
                         )
                         self.errors.append(error_msg)
                         continue
@@ -1172,11 +1180,11 @@ class SemanticAnalyzer:
                         idx_type = self._infer_expression_type(idx)
                         if idx_type != TypeKind.INTEGER and idx_type != TypeKind.UNKNOWN:
                             error_msg = self._format_error(
-                                f"Индекс массива в DATA должен быть типа INTEGER",
+                                f"ндекс массива в DATA должен быть типа INTEGER",
                                 node=idx if hasattr(
                                     idx, 'line') else data_item,
                                 context=f"массив '{var_name}', получен тип {idx_type.value}",
-                                suggestion="Используйте целочисленное выражение для индекса (например: INTEGER переменную или целочисленную константу)"
+                                suggestion="спользуйте целочисленное выражение для индекса (например: INTEGER переменную или целочисленную константу)"
                             )
                             self.errors.append(error_msg)
                     for i, idx_expr in enumerate(indices):
@@ -1185,11 +1193,11 @@ class SemanticAnalyzer:
                             k, l = var_info.dimensions[i]
                             if idx_value < k or idx_value > l:
                                 error_msg = self._format_error(
-                                    f"Индекс {idx_value} для измерения {i+1} массива '{var_name}' вне диапазона",
+                                    f"ндекс {idx_value} для измерения {i+1} массива '{var_name}' вне диапазона",
                                     node=idx_expr if hasattr(
                                         idx_expr, 'line') else data_item,
                                     context=f"допустимый диапазон: [{k}:{l}]",
-                                    suggestion=f"Используйте индекс в диапазоне от {k} до {l} для измерения {i+1} массива '{var_name}'"
+                                    suggestion=f"спользуйте индекс в диапазоне от {k} до {l} для измерения {i+1} массива '{var_name}'"
                                 )
                                 self.errors.append(error_msg)
                 else:
@@ -1214,21 +1222,34 @@ class SemanticAnalyzer:
                         self.warnings.append(warning_msg)
 
     def _analyze_subroutine(self, sub: 'Subroutine'):
-        old_symbol_table = self.symbol_table.copy()
+        old_symbol_table = self.symbol_table
+        old_implicit_none = self.implicit_none
+        old_implicit_rules = self.implicit_rules.copy()
+        old_loop_nesting = self.loop_nesting
+
+        self.symbol_table = {}
+        self.implicit_none = False
+        self.implicit_rules = {}
+        self.loop_nesting = 0
 
         for param in sub.params:
             param_upper = param.upper()
-            type_kind, type_size = self._get_implicit_type(param_upper)
-            var_info = VariableInfo(
+            self.symbol_table[param_upper] = VariableInfo(
                 name=param_upper,
-                type_kind=type_kind,
+                type_kind=TypeKind.UNKNOWN,
                 is_array=False,
                 dimensions=[],
                 is_parameter=False
             )
-            self.symbol_table[param_upper] = var_info
 
         self._analyze_declarations(sub.declarations)
+
+        for param in sub.params:
+            param_upper = param.upper()
+            if param_upper in self.symbol_table:
+                var_info = self.symbol_table[param_upper]
+                if var_info.type_kind == TypeKind.UNKNOWN:
+                    var_info.type_kind = self._get_implicit_type(param_upper)[0]
 
         self._analyze_statements(sub.statements)
 
@@ -1241,11 +1262,22 @@ class SemanticAnalyzer:
             self.warnings.append(warning_msg)
 
         self.symbol_table = old_symbol_table
+        self.implicit_none = old_implicit_none
+        self.implicit_rules = old_implicit_rules
+        self.loop_nesting = old_loop_nesting
 
     def _analyze_function(self, func: 'FunctionDef'):
-        old_symbol_table = self.symbol_table.copy()
+        old_symbol_table = self.symbol_table
+        old_implicit_none = self.implicit_none
+        old_implicit_rules = self.implicit_rules.copy()
+        old_loop_nesting = self.loop_nesting
 
-        return_type = TypeKind.REAL
+        self.symbol_table = {}
+        self.implicit_none = False
+        self.implicit_rules = {}
+        self.loop_nesting = 0
+
+        return_type = TypeKind.UNKNOWN
         if func.return_type:
             type_map = {
                 'INTEGER': TypeKind.INTEGER,
@@ -1254,31 +1286,41 @@ class SemanticAnalyzer:
                 'COMPLEX': TypeKind.COMPLEX,
                 'CHARACTER': TypeKind.CHARACTER
             }
-            return_type = type_map.get(func.return_type.upper(), TypeKind.REAL)
+            return_type = type_map.get(func.return_type.upper(), TypeKind.UNKNOWN)
 
         func_name_upper = func.name.upper()
-        var_info = VariableInfo(
+        self.symbol_table[func_name_upper] = VariableInfo(
             name=func_name_upper,
             type_kind=return_type,
             is_array=False,
             dimensions=[],
-            is_parameter=False
+            is_parameter=False,
+            explicitly_declared=func.return_type is not None
         )
-        self.symbol_table[func_name_upper] = var_info
 
         for param in func.params:
             param_upper = param.upper()
-            type_kind, type_size = self._get_implicit_type(param_upper)
-            param_info = VariableInfo(
+            self.symbol_table[param_upper] = VariableInfo(
                 name=param_upper,
-                type_kind=type_kind,
+                type_kind=TypeKind.UNKNOWN,
                 is_array=False,
                 dimensions=[],
                 is_parameter=False
             )
-            self.symbol_table[param_upper] = param_info
 
         self._analyze_declarations(func.declarations)
+
+        if func_name_upper in self.symbol_table:
+            func_info = self.symbol_table[func_name_upper]
+            if func_info.type_kind == TypeKind.UNKNOWN:
+                func_info.type_kind = self._get_implicit_type(func_name_upper)[0]
+
+        for param in func.params:
+            param_upper = param.upper()
+            if param_upper in self.symbol_table:
+                param_info = self.symbol_table[param_upper]
+                if param_info.type_kind == TypeKind.UNKNOWN:
+                    param_info.type_kind = self._get_implicit_type(param_upper)[0]
 
         self._analyze_statements(func.statements)
 
@@ -1292,13 +1334,16 @@ class SemanticAnalyzer:
             self.errors.append(error_msg)
 
         self.symbol_table = old_symbol_table
+        self.implicit_none = old_implicit_none
+        self.implicit_rules = old_implicit_rules
+        self.loop_nesting = old_loop_nesting
 
     def _analyze_external_statement(self, stmt: 'ExternalStatement'):
         for name in stmt.names:
             name_upper = name.upper()
             if name_upper in self.symbol_table:
                 warning_msg = self._format_warning(
-                    f"Имя '{name}' в EXTERNAL уже объявлено как переменная",
+                    f"мя '{name}' в EXTERNAL уже объявлено как переменная",
                     node=stmt,
                     context="EXTERNAL должен объявлять только подпрограммы"
                 )
@@ -1331,3 +1376,65 @@ class SemanticAnalyzer:
 
     def _analyze_stop_statement(self, stmt: 'StopStatement'):
         pass
+
+    def _analyze_exit_statement(self, stmt: 'ExitStatement'):
+        if self.loop_nesting <= 0:
+            error_msg = self._format_error(
+                "РћРїРµСЂР°С‚РѕСЂ EXIT РјРѕР¶РЅРѕ РёСЃРїРѕР»СЊР·РѕРІР°С‚СЊ С‚РѕР»СЊРєРѕ РІРЅСѓС‚СЂРё С†РёРєР»Р°",
+                node=stmt,
+                context="EXIT",
+                suggestion="РџРµСЂРµРјРµСЃС‚РёС‚Рµ EXIT РІРЅСѓС‚СЂСЊ DO/DO WHILE РёР»Рё РёСЃРїРѕР»СЊР·СѓР№С‚Рµ GOTO"
+            )
+            self.errors.append(error_msg)
+
+    def _is_dimension_bound_constant(self, bound: object) -> bool:
+        if isinstance(bound, int):
+            return True
+        return self._is_constant_expression(bound)
+
+    def _evaluate_dimension_bound(self, bound: object):
+        if isinstance(bound, int):
+            return bound
+        return self._evaluate_constant_expression(bound)
+
+    def _resolve_dimension_ranges(self, dim_ranges: Optional[List[object]], node: ASTNode, name: str) -> Optional[List[Tuple[int, int]]]:
+        if dim_ranges is None:
+            return None
+        resolved = []
+        for i, dim_spec in enumerate(dim_ranges):
+            if isinstance(dim_spec, tuple) and len(dim_spec) == 2:
+                lower_bound, upper_bound = dim_spec
+            else:
+                lower_bound, upper_bound = 1, dim_spec
+            if not self._is_dimension_bound_constant(lower_bound) or not self._is_dimension_bound_constant(upper_bound):
+                error_msg = self._format_error(
+                    f"Р Р°Р·РјРµСЂРЅРѕСЃС‚Рё РјР°СЃСЃРёРІР° '{name}' РґРѕР»Р¶РЅС‹ Р±С‹С‚СЊ РєРѕРЅСЃС‚Р°РЅС‚РЅС‹РјРё",
+                    node=node,
+                    context=f"РёР·РјРµСЂРµРЅРёРµ {i+1}",
+                    suggestion="РСЃРїРѕР»СЊР·СѓР№С‚Рµ С†РµР»РѕС‡РёСЃР»РµРЅРЅС‹Рµ РєРѕРЅСЃС‚Р°РЅС‚С‹ РёР»Рё PARAMETER-РІС‹СЂР°Р¶РµРЅРёСЏ"
+                )
+                self.errors.append(error_msg)
+                return []
+            lower_value = self._evaluate_dimension_bound(lower_bound)
+            upper_value = self._evaluate_dimension_bound(upper_bound)
+            if not isinstance(lower_value, int) or isinstance(lower_value, bool) or not isinstance(upper_value, int) or isinstance(upper_value, bool):
+                error_msg = self._format_error(
+                    f"Р Р°Р·РјРµСЂРЅРѕСЃС‚Рё РјР°СЃСЃРёРІР° '{name}' РґРѕР»Р¶РЅС‹ Р±С‹С‚СЊ С†РµР»РѕС‡РёСЃР»РµРЅРЅС‹РјРё",
+                    node=node,
+                    context=f"РёР·РјРµСЂРµРЅРёРµ {i+1}",
+                    suggestion="РСЃРїРѕР»СЊР·СѓР№С‚Рµ С†РµР»С‹Рµ РєРѕРЅСЃС‚Р°РЅС‚С‹ РёР»Рё INTEGER PARAMETER"
+                )
+                self.errors.append(error_msg)
+                return []
+            if lower_value > upper_value:
+                error_msg = self._format_error(
+                    f"РќРµРІРµСЂРЅС‹Р№ РґРёР°РїР°Р·РѕРЅ РґР»СЏ РёР·РјРµСЂРµРЅРёСЏ {i+1} РјР°СЃСЃРёРІР° '{name}'",
+                    node=node,
+                    context=f"РЅР°С‡Р°Р»СЊРЅРѕРµ Р·РЅР°С‡РµРЅРёРµ ({lower_value}) Р±РѕР»СЊС€Рµ РєРѕРЅРµС‡РЅРѕРіРѕ ({upper_value})",
+                    suggestion="РЎРґРµР»Р°Р№С‚Рµ РЅРёР¶РЅСЋСЋ РіСЂР°РЅРёС†Сѓ РјРµРЅСЊС€Рµ РёР»Рё СЂР°РІРЅРѕ РІРµСЂС…РЅРµР№"
+                )
+                self.errors.append(error_msg)
+                return []
+            resolved.append((lower_value, upper_value))
+        return resolved
+

@@ -137,7 +137,7 @@ class ExprHoister:
         if key in self.cache:
             return Variable(name=self.cache[key], line=expr.line, col=expr.col)
         self.counterRef[0] += 1
-        tmpName = f"lcm{self.counterRef[0]}"
+        tmpName = f"licm_tmp_{self.counterRef[0]}"
         self.hoisted.append((tmpName, expr))
         self.cache[key] = tmpName
         return Variable(name=tmpName, line=expr.line, col=expr.col)

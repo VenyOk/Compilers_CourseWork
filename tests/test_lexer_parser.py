@@ -1,9 +1,10 @@
 import unittest
 import sys
 import os
+from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.core import Lexer, Parser, TokenType, Program, Declaration, Assignment, DoLoop, IfStatement, PrintStatement
+from src.core import Lexer, Parser, TokenType, Program, Declaration, Assignment, DoLoop, IfStatement, PrintStatement, ExternalStatement, CommonStatement, ExitStatement
 
 
 class TestLexer(unittest.TestCase):
@@ -215,6 +216,142 @@ END
         self.assertEqual(len(ast.declarations), 2)
         self.assertEqual(ast.declarations[0].type, "INTEGER")
         self.assertEqual(ast.declarations[1].type, "REAL")
+
+    def test_fixed_form_continuation_line_parses(self):
+        code = (
+            "      PROGRAM CONT\n"
+            "      REAL A(1024, 1024), B(1024, 1024),\n"
+            "     1     C(1024, 1024)\n"
+            "      END\n"
+        )
+        ast = self.parse(code)
+        self.assertIsInstance(ast, Program)
+        self.assertEqual(ast.name, "CONT")
+        self.assertEqual(len(ast.declarations), 1)
+        self.assertEqual(ast.declarations[0].type, "REAL")
+        self.assertEqual(len(ast.declarations[0].names), 3)
+
+    def test_strassen_scaled_to_1024_still_parses(self):
+        source = Path("inputs/test_strassen.f").read_text(encoding="utf-8")
+        scaled = source.replace("N = 8", "N = 1024")
+        ast = self.parse(scaled)
+        self.assertIsInstance(ast, Program)
+        self.assertEqual(ast.name, "STRASS")
+
+    def test_symbolic_dimension_parses(self):
+        code = """
+      PROGRAM SYMDIM
+      PARAMETER (LOW = 2, HIGH = LOW + 3)
+      INTEGER A(LOW:HIGH), B(HIGH)
+      DIMENSION C(LOW:HIGH + 1)
+      END
+"""
+        ast = self.parse(code)
+        self.assertIsInstance(ast, Program)
+        decl = next(d for d in ast.declarations if isinstance(d, Declaration))
+        self.assertEqual(decl.names[0][0], "A")
+        self.assertEqual(len(decl.names[0][1]), 1)
+
+    def test_external_common_and_exit_parse(self):
+        code = """
+      PROGRAM FEATS
+      EXTERNAL FOO
+      INTEGER A(6), I
+      COMMON /BLK/ A
+      DO I = 1, 10
+          IF (I .GT. 3) EXIT
+      END DO
+      END
+"""
+        ast = self.parse(code)
+        self.assertTrue(any(isinstance(decl, ExternalStatement) for decl in ast.declarations))
+        self.assertTrue(any(isinstance(decl, CommonStatement) for decl in ast.declarations))
+        loop = next(stmt for stmt in ast.statements if isinstance(stmt, DoLoop))
+        self.assertTrue(any(isinstance(stmt, IfStatement) for stmt in ast.statements) or any(isinstance(stmt, ExitStatement) for stmt in loop.body) or any(isinstance(getattr(stmt, "statement", None), ExitStatement) for stmt in loop.body if hasattr(stmt, "statement")))
+
+    def test_complex_double_precision_and_data_parse(self):
+        code = """
+      PROGRAM CMPDP
+      DOUBLE PRECISION X
+      COMPLEX Z
+      INTEGER I
+      DATA I / 1 /
+      X = 1.0D+10
+      Z = (1.0, -2.0)
+      END
+"""
+        ast = self.parse(code)
+        self.assertIsInstance(ast, Program)
+        decl_types = [decl.type for decl in ast.declarations if isinstance(decl, Declaration)]
+        self.assertIn("REAL", decl_types)
+        self.assertIn("COMPLEX", decl_types)
+        self.assertTrue(any(type(decl).__name__ == "DataStatement" for decl in ast.declarations))
+
+    def test_comprehensive_syntax_mix_parses(self):
+        code = """
+      PROGRAM SYNALL
+      IMPLICIT NONE
+      INTEGER I, J, K
+      INTEGER A(2,2)
+      REAL X
+      LOGICAL FLAG
+      CHARACTER*8 MSG
+      PARAMETER (N = 2)
+      DIMENSION B(1:N,1:N)
+      DATA I/1/
+      EXTERNAL FOO
+      COMMON /BLK/ A
+      FLAG = .TRUE.
+      MSG = 'HELLO'
+      IF (FLAG) J = 1
+      IF (J .EQ. 1) THEN
+          K = 2
+      ELSEIF (J .EQ. 2) THEN
+          K = 3
+      ELSE
+          K = 4
+      ENDIF
+      IF (K) 10, 20, 30
+   10 CONTINUE
+      GOTO 40
+   20 CONTINUE
+      GOTO 40
+   30 CONTINUE
+   40 CONTINUE
+      DO I = 1, N
+          DO J = 1, N
+              A(I,J) = I + J
+              IF (J .GT. 1) EXIT
+          END DO
+      END DO
+      DO WHILE (FLAG)
+          FLAG = .FALSE.
+      END DO
+      CALL SUB1(A)
+      WRITE (*,*) A(1,1)
+      READ (*,*) I
+      STOP
+      END
+
+      SUBROUTINE SUB1(A)
+      INTEGER A(2,2), I
+      DO I = 1, 2
+          A(I,1) = I
+      END DO
+      RETURN
+      END
+
+      INTEGER FUNCTION FOO(X)
+      INTEGER X
+      FOO = X + 1
+      RETURN
+      END
+"""
+        ast = self.parse(code)
+        self.assertIsInstance(ast, Program)
+        self.assertEqual(ast.name, "SYNALL")
+        self.assertEqual(len(ast.subroutines), 1)
+        self.assertEqual(len(ast.functions), 1)
 
     def test_multiple_declarations(self):
         code = """

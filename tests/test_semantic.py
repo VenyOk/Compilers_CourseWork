@@ -80,6 +80,23 @@ class TestArraysValidation(unittest.TestCase):
         success = semantic.analyze(ast)
         self.assertTrue(success)
 
+    def test_symbolic_array_bounds_valid(self):
+        code = """      PROGRAM TESTSMB
+      PARAMETER (LOW = 5, HIGH = LOW + 2)
+      INTEGER A(LOW:HIGH)
+      DIMENSION B(LOW:HIGH + 1)
+      A(LOW) = 10
+      B(HIGH + 1) = 20
+      PRINT *, A(LOW), B(HIGH + 1)
+      END"""
+        lexer = Lexer(code)
+        tokens = lexer.tokenize()
+        parser = Parser(tokens)
+        ast = parser.parse()
+        semantic = SemanticAnalyzer()
+        success = semantic.analyze(ast)
+        self.assertTrue(success)
+
 
 class TestParameterValidation(unittest.TestCase):
     def test_parameter_valid(self):
@@ -282,12 +299,29 @@ class TestDoLoopsValidation(unittest.TestCase):
         success = semantic.analyze(ast)
         self.assertTrue(success)
 
-    def test_do_invalid_non_constant(self):
+    def test_do_non_constant_bounds_valid(self):
         code = """      PROGRAM TEST26
       INTEGER I, J, K
       J = 1
       K = 10
       DO I = J, K
+          PRINT *, I
+      END DO
+      END"""
+        lexer = Lexer(code)
+        tokens = lexer.tokenize()
+        parser = Parser(tokens)
+        ast = parser.parse()
+        semantic = SemanticAnalyzer()
+        success = semantic.analyze(ast)
+        self.assertTrue(success)
+
+    def test_do_invalid_non_integer_bound(self):
+        code = """      PROGRAM TEST46
+      INTEGER I
+      REAL X
+      X = 1.5
+      DO I = X, 10
           PRINT *, I
       END DO
       END"""
@@ -312,6 +346,50 @@ class TestDoLoopsValidation(unittest.TestCase):
           IF (I .GE. 10) FLAG = .FALSE.
       END DO
       PRINT *, I
+      END"""
+        lexer = Lexer(code)
+        tokens = lexer.tokenize()
+        parser = Parser(tokens)
+        ast = parser.parse()
+        semantic = SemanticAnalyzer()
+        success = semantic.analyze(ast)
+        self.assertTrue(success)
+
+    def test_exit_inside_loop_valid(self):
+        code = """      PROGRAM TEXIT1
+      INTEGER I
+      DO I = 1, 10
+          IF (I .GT. 3) EXIT
+      END DO
+      END"""
+        lexer = Lexer(code)
+        tokens = lexer.tokenize()
+        parser = Parser(tokens)
+        ast = parser.parse()
+        semantic = SemanticAnalyzer()
+        success = semantic.analyze(ast)
+        self.assertTrue(success)
+
+    def test_exit_outside_loop_invalid(self):
+        code = """      PROGRAM TEXIT2
+      EXIT
+      END"""
+        lexer = Lexer(code)
+        tokens = lexer.tokenize()
+        parser = Parser(tokens)
+        ast = parser.parse()
+        semantic = SemanticAnalyzer()
+        success = semantic.analyze(ast)
+        self.assertFalse(success)
+        self.assertGreater(len(semantic.get_errors()), 0)
+
+
+class TestDeclarationsValidation(unittest.TestCase):
+    def test_external_and_common_valid(self):
+        code = """      PROGRAM TDECLS
+      EXTERNAL FOO
+      INTEGER A(6)
+      COMMON /BLK/ A
       END"""
         lexer = Lexer(code)
         tokens = lexer.tokenize()

@@ -143,7 +143,7 @@ def main():
         type=int,
         default=0,
         choices=[0, 2, 3],
-        help='Уровень оптимизации: 0=нет, 2=CSE/LICM/тайлинг, 3=+скашивание'
+        help='Уровень оптимизации: 0=нет, 2=CSE/LICM/interchange/тайлинг, 3=+скашивание/wavefront'
     )
     args = parser.parse_args()
     if not args.file.endswith('.f'):

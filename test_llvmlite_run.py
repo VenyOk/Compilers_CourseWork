@@ -3,6 +3,7 @@ import ctypes
 import sys
 import os
 import time
+import threading
 
 for fn in [llvm.initialize_native_target, llvm.initialize_native_asmprinter,
            llvm.initialize_all_targets, llvm.initialize_all_asmprinters]:
@@ -10,6 +11,63 @@ for fn in [llvm.initialize_native_target, llvm.initialize_native_asmprinter,
         fn()
     except Exception:
         pass
+
+
+PARALLEL_FOR_TYPE = ctypes.CFUNCTYPE(
+    None,
+    ctypes.c_int32,
+    ctypes.c_int32,
+    ctypes.c_int32,
+    ctypes.c_int32,
+    ctypes.c_void_p,
+    ctypes.c_void_p,
+)
+PARALLEL_WORKER_TYPE = ctypes.CFUNCTYPE(None, ctypes.c_int32, ctypes.c_int32, ctypes.c_void_p)
+
+
+def _parallel_for_i32(start, end, step, grain, env_ptr, worker_ptr):
+    if step == 0:
+        return
+    if step > 0 and end < start:
+        return
+    if step < 0 and start < end:
+        return
+    total = ((end - start) // step) + 1 if step > 0 else ((start - end) // (-step)) + 1
+    if total <= 0:
+        return
+    worker = PARALLEL_WORKER_TYPE(worker_ptr)
+    grain = max(int(grain), 1)
+    requested_threads = 0
+    try:
+        requested_threads = int(os.environ.get("FORTRAN_PARALLEL_THREADS", "0"))
+    except Exception:
+        requested_threads = 0
+    thread_cap = requested_threads if requested_threads > 0 else (os.cpu_count() or 1)
+    max_threads = max(1, min(thread_cap, total // grain))
+    if max_threads <= 1:
+        worker(start, end, env_ptr)
+        return
+    chunk_iters = (total + max_threads - 1) // max_threads
+    threads = []
+    for chunk_index in range(max_threads):
+        chunk_start_iter = chunk_index * chunk_iters
+        if chunk_start_iter >= total:
+            break
+        chunk_end_iter = min(total, chunk_start_iter + chunk_iters) - 1
+        chunk_start = start + chunk_start_iter * step
+        chunk_end = start + chunk_end_iter * step
+        thread = threading.Thread(target=worker, args=(chunk_start, chunk_end, env_ptr))
+        thread.start()
+        threads.append(thread)
+    for thread in threads:
+        thread.join()
+
+
+PARALLEL_FOR_CALLBACK = PARALLEL_FOR_TYPE(_parallel_for_i32)
+llvm.add_symbol(
+    "fortran_parallel_for_i32",
+    ctypes.cast(PARALLEL_FOR_CALLBACK, ctypes.c_void_p).value,
+)
 
 
 def main():

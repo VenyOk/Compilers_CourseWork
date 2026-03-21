@@ -6,6 +6,9 @@ from src.optimizations.licm import LoopInvariantCodeMotion
 from src.optimizations.loop_interchange import LoopInterchange
 from src.optimizations.loop_tiling import LoopTiling
 from src.optimizations.loop_skewing import LoopSkewing
+from src.optimizations.loop_wavefront import LoopWavefront
+from src.optimizations.generated_declarations import GeneratedVariableDeclarations
+from src.optimizations.loop_parallelization import LoopParallelization
 
 
 def buildPasses(level: int) -> List[Type[ASTOptimizationPass]]:
@@ -17,6 +20,7 @@ def buildPasses(level: int) -> List[Type[ASTOptimizationPass]]:
             CommonSubexpressionElimination,
             LoopInterchange,
             LoopTiling,
+            GeneratedVariableDeclarations,
         ]
     if level == 3:
         return [
@@ -25,6 +29,9 @@ def buildPasses(level: int) -> List[Type[ASTOptimizationPass]]:
             LoopInterchange,
             LoopSkewing,
             LoopTiling,
+            LoopWavefront,
+            GeneratedVariableDeclarations,
+            LoopParallelization,
         ]
     return []
 

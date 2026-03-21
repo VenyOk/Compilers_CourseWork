@@ -9,7 +9,8 @@ from src.core import (
     ReturnStatement, StopStatement, DoWhile, LabeledDoLoop, LabeledDoWhile,
     SimpleIfStatement, ArrayRef, DimensionStatement, GotoStatement, ContinueStatement,
     Subroutine, FunctionDef, ImplicitNone, ImplicitStatement, ComplexLiteral,
-    ParameterStatement, ArithmeticIfStatement
+    ParameterStatement, ArithmeticIfStatement, CommonStatement, ExternalStatement,
+    ExitStatement, ParallelDoLoop
 )
 
 
@@ -59,9 +60,18 @@ class LLVMGenerator:
         self.phi_tracking: List[Dict[str, str]] = []
         self.last_block_before_endif: Dict[str, str] = {}
         self.array_dimensions: Dict[str, List[int]] = {}
+        self.array_bounds: Dict[str, List[Tuple[int, int]]] = {}
         self.last_block_label: str = ""
         self.current_block: str = "entry"
         self.current_subroutine_params: List[str] = []
+        self.heap_array_threshold_bytes = 1048576
+        self.loop_exit_stack: List[str] = []
+        self.common_globals: Dict[str, Tuple[str, str]] = {}
+        self.parallel_struct_counter = 0
+        self.parallel_worker_counter = 0
+        self.parallel_type_insert_pos = 0
+        self.parallel_strings_insert_pos = 0
+        self.deferred_functions: List[str] = []
 
     def generate(self, ast: Program) -> str:
         self.code_lines = []
@@ -75,7 +85,15 @@ class LLVMGenerator:
         self.var_ssa_versions = {}
         self.phi_tracking = []
         self.array_dimensions = {}
+        self.array_bounds = {}
         self.current_subroutine_params = []
+        self.loop_exit_stack = []
+        self.common_globals = {}
+        self.parallel_struct_counter = 0
+        self.parallel_worker_counter = 0
+        self.parallel_type_insert_pos = 0
+        self.parallel_strings_insert_pos = 0
+        self.deferred_functions = []
 
         for stmt_func in ast.statement_functions:
             if hasattr(stmt_func, 'name') and stmt_func.name:
@@ -101,7 +119,9 @@ class LLVMGenerator:
         self._collect_strings(ast)
         self._emit_header()
         self._emit_external_declarations()
-        strings_line_start = len(self.code_lines)
+        self._emit_common_globals(ast)
+        self.parallel_type_insert_pos = len(self.code_lines)
+        self.parallel_strings_insert_pos = len(self.code_lines)
         self.code_lines.append("; === Глобальные строки (будут заполнены) ===")
         self.local_counter = 0
         self.var_alloc = {}
@@ -112,6 +132,9 @@ class LLVMGenerator:
 
         for func in ast.functions:
             self._emit_function(func)
+
+        if self.deferred_functions:
+            self.code_lines.extend(self.deferred_functions)
 
         if self.strings:
             strings_lines = ["; === Глобальные строки ==="]
@@ -124,7 +147,7 @@ class LLVMGenerator:
                 strings_lines.append(
                     f'{string_name} = private constant [{str_size} x i8] c"{escaped}\\00"')
             strings_lines.append("")
-            self.code_lines[strings_line_start:strings_line_start +
+            self.code_lines[self.parallel_strings_insert_pos:self.parallel_strings_insert_pos +
                             1] = strings_lines
 
         if ast.subroutines or ast.functions:
@@ -172,7 +195,380 @@ class LLVMGenerator:
         self.code_lines.append("declare double @pow(double, double)")
         self.code_lines.append("declare i32 @abs(i32)")
         self.code_lines.append("declare double @fabs(double)")
+        self.code_lines.append("declare void @fortran_parallel_for_i32(i32, i32, i32, i32, i8*, i8*)")
         self.code_lines.append("")
+
+    def _get_scope_implicit_type(self, name: str, implicit_none: bool, implicit_rules: Dict[str, str]) -> Tuple[str, Optional[int]]:
+        if not name:
+            return ("UNKNOWN", None)
+        first_char = name[0].upper()
+        if first_char in implicit_rules:
+            return (implicit_rules[first_char], None)
+        if not implicit_none:
+            if 'I' <= first_char <= 'N':
+                return ("INTEGER", None)
+            return ("REAL", None)
+        return ("UNKNOWN", None)
+
+    def _evaluate_constant_expression(self, expr: Expression, parameters: Dict[str, object]):
+        if isinstance(expr, IntegerLiteral):
+            return expr.value
+        if isinstance(expr, RealLiteral):
+            return expr.value
+        if isinstance(expr, LogicalLiteral):
+            return expr.value
+        if isinstance(expr, StringLiteral):
+            return expr.value
+        if isinstance(expr, Variable):
+            return parameters.get(expr.name.upper())
+        if isinstance(expr, UnaryOp):
+            operand = self._evaluate_constant_expression(expr.operand, parameters)
+            if operand is None:
+                return None
+            if expr.op == "+":
+                return operand
+            if expr.op == "-":
+                return -operand
+            if expr.op == ".NOT.":
+                return not operand
+            return None
+        if isinstance(expr, BinaryOp):
+            left = self._evaluate_constant_expression(expr.left, parameters)
+            right = self._evaluate_constant_expression(expr.right, parameters)
+            if left is None or right is None:
+                return None
+            if expr.op == "+":
+                return left + right
+            if expr.op == "-":
+                return left - right
+            if expr.op == "*":
+                return left * right
+            if expr.op == "/":
+                if isinstance(left, int) and isinstance(right, int):
+                    return left // right
+                return left / right
+            if expr.op == "**":
+                return left ** right
+            return None
+        return None
+
+    def _resolve_dimension_ranges(self, dims, parameters: Dict[str, object]) -> List[Tuple[int, int]]:
+        resolved = []
+        if not dims:
+            return resolved
+        for dim_spec in dims:
+            if isinstance(dim_spec, tuple) and len(dim_spec) == 2:
+                lower_bound, upper_bound = dim_spec
+            else:
+                lower_bound, upper_bound = 1, dim_spec
+            lower_value = lower_bound if isinstance(lower_bound, int) else self._evaluate_constant_expression(lower_bound, parameters)
+            upper_value = upper_bound if isinstance(upper_bound, int) else self._evaluate_constant_expression(upper_bound, parameters)
+            if not isinstance(lower_value, int) or isinstance(lower_value, bool):
+                lower_value = 1
+            if not isinstance(upper_value, int) or isinstance(upper_value, bool):
+                upper_value = lower_value
+            resolved.append((lower_value, upper_value))
+        return resolved
+
+    def _collect_scope_declaration_info(self, declarations):
+        implicit_none = False
+        implicit_rules: Dict[str, str] = {}
+        parameters: Dict[str, object] = {}
+        declared_types: Dict[str, str] = {}
+        declared_dims: Dict[str, List[Tuple[int, int]]] = {}
+        common_blocks: List[Tuple[str, str]] = []
+        for decl in declarations:
+            if isinstance(decl, ImplicitNone):
+                implicit_none = True
+            elif isinstance(decl, ImplicitStatement):
+                for rule in decl.rules:
+                    for letter in rule.get_letters():
+                        implicit_rules[letter.upper()] = rule.type_name.upper()
+            elif isinstance(decl, ParameterStatement):
+                for param_name, param_expr in decl.params:
+                    value = self._evaluate_constant_expression(param_expr, parameters)
+                    if value is not None:
+                        parameters[param_name.upper()] = value
+            elif isinstance(decl, DimensionStatement):
+                for name, dims in decl.names:
+                    declared_dims[name.upper()] = self._resolve_dimension_ranges(dims, parameters)
+            elif isinstance(decl, Declaration):
+                llvm_type = self.type_map.get(decl.type, 'i32')
+                for name, dims in decl.names:
+                    name_upper = name.upper()
+                    declared_types[name_upper] = llvm_type
+                    if dims:
+                        declared_dims[name_upper] = self._resolve_dimension_ranges(dims, parameters)
+            elif isinstance(decl, CommonStatement):
+                for block_name, variables in decl.blocks:
+                    for var in variables:
+                        common_blocks.append((block_name.upper(), var.name.upper()))
+        return {
+            "implicit_none": implicit_none,
+            "implicit_rules": implicit_rules,
+            "parameters": parameters,
+            "declared_types": declared_types,
+            "declared_dims": declared_dims,
+            "common_blocks": common_blocks,
+        }
+
+    def _common_global_key(self, block_name: str, var_name: str) -> str:
+        block_part = block_name.upper() if block_name else "BLANK"
+        return f"{block_part}:{var_name.upper()}"
+
+    def _common_global_symbol(self, block_name: str, var_name: str) -> str:
+        block_part = block_name.upper() if block_name else "BLANK"
+        return f"@COMMON_{block_part}_{var_name.upper()}"
+
+    def _ensure_common_global(self, block_name: str, var_name: str, llvm_type: str, dims: List[Tuple[int, int]]):
+        key = self._common_global_key(block_name, var_name)
+        if key in self.common_globals:
+            return
+        symbol = self._common_global_symbol(block_name, var_name)
+        if dims:
+            total_size, dim_sizes = self._compute_array_layout(dims)
+            alloc_type = f"[{total_size} x {llvm_type}]"
+            self.array_bounds[var_name.upper()] = dims
+            self.array_dimensions[var_name.upper()] = dim_sizes
+            self.code_lines.append(f"{symbol} = global {alloc_type} zeroinitializer")
+            self.common_globals[key] = (alloc_type, symbol)
+        else:
+            self.code_lines.append(f"{symbol} = global {llvm_type} zeroinitializer")
+            self.common_globals[key] = (llvm_type, symbol)
+
+    def _emit_common_globals(self, ast: Program):
+        scopes = [ast.declarations]
+        scopes.extend(sub.declarations for sub in ast.subroutines)
+        scopes.extend(func.declarations for func in ast.functions)
+        for declarations in scopes:
+            scope_info = self._collect_scope_declaration_info(declarations)
+            for block_name, var_name in scope_info["common_blocks"]:
+                llvm_type = scope_info["declared_types"].get(var_name)
+                if llvm_type is None:
+                    implicit_type_name, _ = self._get_scope_implicit_type(
+                        var_name, scope_info["implicit_none"], scope_info["implicit_rules"]
+                    )
+                    llvm_type = self.type_map.get(implicit_type_name, 'double')
+                dims = scope_info["declared_dims"].get(var_name, [])
+                self._ensure_common_global(block_name, var_name, llvm_type, dims)
+        if self.common_globals:
+            self.code_lines.append("")
+
+    def _insert_parallel_type(self, line: str):
+        self.code_lines.insert(self.parallel_type_insert_pos, line)
+        self.parallel_type_insert_pos += 1
+        self.parallel_strings_insert_pos += 1
+
+    def _is_phi_trackable_var(self, var_name: str, alloc_type: str) -> bool:
+        if alloc_type.startswith("["):
+            return False
+        if var_name.upper() in self.array_dimensions:
+            return False
+        return True
+
+    def _lookup_var_alloc(self, name: str):
+        if name in self.var_alloc:
+            return self.var_alloc[name]
+        name_upper = name.upper()
+        for key, value in self.var_alloc.items():
+            if key.upper() == name_upper:
+                return value
+        return None
+
+    def _collect_parallel_loop_vars(self, stmts: List[Statement]) -> List[str]:
+        result: List[str] = []
+        for stmt in stmts:
+            if isinstance(stmt, (DoLoop, LabeledDoLoop, ParallelDoLoop)):
+                result.append(stmt.var)
+                result.extend(self._collect_parallel_loop_vars(stmt.body))
+            elif isinstance(stmt, IfStatement):
+                result.extend(self._collect_parallel_loop_vars(stmt.then_body))
+                for _, body in stmt.elif_parts:
+                    result.extend(self._collect_parallel_loop_vars(body))
+                if stmt.else_body:
+                    result.extend(self._collect_parallel_loop_vars(stmt.else_body))
+            elif isinstance(stmt, SimpleIfStatement):
+                result.extend(self._collect_parallel_loop_vars([stmt.statement]))
+        ordered = []
+        seen = set()
+        for name in result:
+            if name not in seen:
+                seen.add(name)
+                ordered.append(name)
+        return ordered
+
+    def _emit_parallel_worker_function(self, stmt: ParallelDoLoop, env_type_name: str, worker_name: str, captures, private_allocs):
+        old_code_lines = self.code_lines
+        old_var_alloc = self.var_alloc.copy()
+        old_local_counter = self.local_counter
+        old_block_counter = self.block_counter
+        old_current_block = self.current_block
+        old_current_function = getattr(self, "current_function", "main")
+        old_phi_tracking = self.phi_tracking
+        old_var_ssa_versions = self.var_ssa_versions
+        old_last_block_before_endif = self.last_block_before_endif
+        old_loop_exit_stack = self.loop_exit_stack
+        lines: List[str] = []
+        self.code_lines = lines
+        self.var_alloc = {}
+        self.local_counter = 0
+        self.block_counter = 0
+        self.current_block = "entry"
+        self.current_function = worker_name
+        self.phi_tracking = []
+        self.var_ssa_versions = {}
+        self.last_block_before_endif = {}
+        self.loop_exit_stack = []
+
+        self.code_lines.append(f"define internal void @{worker_name}(i32 %chunk_start, i32 %chunk_end, i8* %env) {{")
+        self.code_lines.append("entry:")
+        self._set_current_block("entry")
+
+        if captures:
+            env_cast = self._new_local()
+            self.code_lines.append(f"  {env_cast} = bitcast i8* %env to {env_type_name}*")
+            for index, (name, alloc_type, _) in enumerate(captures):
+                field_type = f"{alloc_type}*"
+                field_ptr = self._new_local()
+                self.code_lines.append(
+                    f"  {field_ptr} = getelementptr inbounds {env_type_name}, {env_type_name}* {env_cast}, i32 0, i32 {index}"
+                )
+                loaded_ptr = self._new_local()
+                self.code_lines.append(f"  {loaded_ptr} = load {field_type}, {field_type}* {field_ptr}")
+                self.var_alloc[name] = (alloc_type, loaded_ptr)
+
+        for loop_var, alloc_type in private_allocs:
+            local_name = f"%{loop_var}"
+            self.code_lines.append(f"  {local_name} = alloca {alloc_type}")
+            self.var_alloc[loop_var] = (alloc_type, local_name)
+
+        loop_ptr = self._lookup_var_alloc(stmt.var)[1]
+        step_val, _ = self._emit_expression(stmt.step if stmt.step is not None else IntegerLiteral(value=1))
+        loop_id = self._new_block_id()
+        loop_label = f"parallel_loop_{loop_id}"
+        body_label = f"parallel_body_{loop_id}"
+        end_label = f"parallel_end_{loop_id}"
+        self.code_lines.append(f"  store i32 %chunk_start, i32* {loop_ptr}")
+        self.code_lines.append(f"  br label %{loop_label}")
+        self.code_lines.append(f"{loop_label}:")
+        self._set_current_block(loop_label)
+        loop_var = self._new_local()
+        self.code_lines.append(f"  {loop_var} = load i32, i32* {loop_ptr}")
+        cond = self._new_local()
+        self.code_lines.append(f"  {cond} = icmp sle i32 {loop_var}, %chunk_end")
+        self.code_lines.append(f"  br i1 {cond}, label %{body_label}, label %{end_label}")
+        self.code_lines.append(f"{body_label}:")
+        self._set_current_block(body_label)
+        for body_stmt in stmt.body:
+            self._emit_statement(body_stmt)
+        current_val = self._new_local()
+        self.code_lines.append(f"  {current_val} = load i32, i32* {loop_ptr}")
+        next_val = self._new_local()
+        self.code_lines.append(f"  {next_val} = add i32 {current_val}, {step_val}")
+        self.code_lines.append(f"  store i32 {next_val}, i32* {loop_ptr}")
+        self._emit_br_if_not_terminated(loop_label)
+        self.code_lines.append(f"{end_label}:")
+        self._set_current_block(end_label)
+        self.code_lines.append("  ret void")
+        self.code_lines.append("}")
+        self.code_lines.append("")
+
+        self.code_lines = old_code_lines
+        self.var_alloc = old_var_alloc
+        self.local_counter = old_local_counter
+        self.block_counter = old_block_counter
+        self.current_block = old_current_block
+        self.current_function = old_current_function
+        self.phi_tracking = old_phi_tracking
+        self.var_ssa_versions = old_var_ssa_versions
+        self.last_block_before_endif = old_last_block_before_endif
+        self.loop_exit_stack = old_loop_exit_stack
+        return "\n".join(lines)
+
+    def _emit_parallel_do_loop(self, stmt: ParallelDoLoop):
+        private_names = [stmt.var] + self._collect_parallel_loop_vars(stmt.body) + list(stmt.private_vars)
+        ordered_private_names = []
+        private_seen = set()
+        for name in private_names:
+            name_upper = name.upper()
+            if name_upper in private_seen:
+                continue
+            private_seen.add(name_upper)
+            ordered_private_names.append(name)
+        private_set = {name.upper() for name in ordered_private_names}
+        captures = [
+            (name, alloc_type, ptr_name)
+            for name, (alloc_type, ptr_name) in self.var_alloc.items()
+            if name.upper() not in private_set
+        ]
+        private_allocs = []
+        for name in ordered_private_names:
+            alloc = self._lookup_var_alloc(name)
+            alloc_type = alloc[0] if alloc is not None else "i32"
+            private_allocs.append((name, alloc_type))
+        env_type_name = f"%parallel_env_{self.parallel_struct_counter}"
+        self.parallel_struct_counter += 1
+        if captures:
+            env_fields = ", ".join(f"{alloc_type}*" for _, alloc_type, _ in captures)
+        else:
+            env_fields = "i8"
+        self._insert_parallel_type(f"{env_type_name} = type {{ {env_fields} }}")
+        env_alloc = self._new_local()
+        self.code_lines.append(f"  {env_alloc} = alloca {env_type_name}")
+        if captures:
+            for index, (_, alloc_type, ptr_name) in enumerate(captures):
+                field_type = f"{alloc_type}*"
+                field_ptr = self._new_local()
+                self.code_lines.append(
+                    f"  {field_ptr} = getelementptr inbounds {env_type_name}, {env_type_name}* {env_alloc}, i32 0, i32 {index}"
+                )
+                self.code_lines.append(f"  store {field_type} {ptr_name}, {field_type}* {field_ptr}")
+        else:
+            field_ptr = self._new_local()
+            self.code_lines.append(
+                f"  {field_ptr} = getelementptr inbounds {env_type_name}, {env_type_name}* {env_alloc}, i32 0, i32 0"
+            )
+            self.code_lines.append(f"  store i8 0, i8* {field_ptr}")
+
+        worker_name = f"parallel_worker_{self.parallel_worker_counter}"
+        self.parallel_worker_counter += 1
+        self.deferred_functions.append(
+            self._emit_parallel_worker_function(stmt, env_type_name, worker_name, captures, private_allocs)
+        )
+
+        start_val, _ = self._emit_expression(stmt.start)
+        end_val, _ = self._emit_expression(stmt.end)
+        step_val, _ = self._emit_expression(stmt.step if stmt.step is not None else IntegerLiteral(value=1))
+        env_i8 = self._new_local()
+        self.code_lines.append(f"  {env_i8} = bitcast {env_type_name}* {env_alloc} to i8*")
+        worker_ptr = self._new_local()
+        self.code_lines.append(f"  {worker_ptr} = bitcast void (i32, i32, i8*)* @{worker_name} to i8*")
+
+        loop_alloc = self._lookup_var_alloc(stmt.var)
+        if loop_alloc is not None:
+            loop_alloc_type, loop_ptr = loop_alloc
+            self.code_lines.append(f"  store i32 {start_val}, i32* {loop_ptr}")
+        cond = self._new_local()
+        self.code_lines.append(f"  {cond} = icmp sle i32 {start_val}, {end_val}")
+        exec_label = f"parallel_exec_{self._new_block_id()}"
+        skip_label = f"parallel_skip_{self._new_block_id()}"
+        done_label = f"parallel_done_{self._new_block_id()}"
+        self.code_lines.append(f"  br i1 {cond}, label %{exec_label}, label %{skip_label}")
+        self.code_lines.append(f"{exec_label}:")
+        self._set_current_block(exec_label)
+        self.code_lines.append(
+            f"  call void @fortran_parallel_for_i32(i32 {start_val}, i32 {end_val}, i32 {step_val}, i32 {stmt.grain}, i8* {env_i8}, i8* {worker_ptr})"
+        )
+        if loop_alloc is not None:
+            final_val = self._new_local()
+            self.code_lines.append(f"  {final_val} = add i32 {end_val}, {step_val}")
+            self.code_lines.append(f"  store i32 {final_val}, i32* {loop_ptr}")
+        self.code_lines.append(f"  br label %{done_label}")
+        self.code_lines.append(f"{skip_label}:")
+        self._set_current_block(skip_label)
+        self.code_lines.append(f"  br label %{done_label}")
+        self.code_lines.append(f"{done_label}:")
+        self._set_current_block(done_label)
 
     def _get_implicit_type(self, name: str) -> Tuple[str, Optional[int]]:
         if not name:
@@ -232,12 +628,10 @@ class LLVMGenerator:
             self.code_lines.append("")
 
     def _emit_declarations(self, declarations: List[Declaration]):
-        dim_pending = {}
+        scope_info = self._collect_scope_declaration_info(declarations)
+        common_names = {var_name for _, var_name in scope_info["common_blocks"]}
+
         for decl in declarations:
-            if isinstance(decl, DimensionStatement):
-                for name, dims in decl.names:
-                    dim_pending[name] = dims
-                continue
             if isinstance(decl, ParameterStatement):
                 for param_name, param_expr in decl.params:
                     val, val_type = self._emit_expression(param_expr)
@@ -246,16 +640,44 @@ class LLVMGenerator:
                         self.code_lines.append(f"  {local_name} = alloca {val_type}")
                         self.var_alloc[param_name] = (val_type, local_name)
                     alloc_type, ptr_name = self.var_alloc[param_name]
-                    base_type = alloc_type if '[' not in alloc_type else alloc_type
                     self.code_lines.append(f"  store {val_type} {val}, {val_type}* {ptr_name}")
+                continue
+            if isinstance(decl, CommonStatement):
+                for block_name, variables in decl.blocks:
+                    for var in variables:
+                        name = var.name
+                        name_upper = name.upper()
+                        key = self._common_global_key(block_name, name)
+                        if key not in self.common_globals:
+                            llvm_type = scope_info["declared_types"].get(name_upper)
+                            if llvm_type is None:
+                                implicit_type_name, _ = self._get_scope_implicit_type(
+                                    name_upper, scope_info["implicit_none"], scope_info["implicit_rules"]
+                                )
+                                llvm_type = self.type_map.get(implicit_type_name, 'double')
+                            dims = scope_info["declared_dims"].get(name_upper, [])
+                            self._ensure_common_global(block_name, name, llvm_type, dims)
+                        alloc_type, symbol = self.common_globals[key]
+                        self.var_alloc[name] = (alloc_type, symbol)
+                        if name_upper in scope_info["declared_dims"]:
+                            dims = scope_info["declared_dims"][name_upper]
+                            _, dim_sizes = self._compute_array_layout(dims)
+                            self.array_bounds[name_upper] = dims
+                            self.array_dimensions[name_upper] = dim_sizes
                 continue
             if hasattr(decl, 'names') and hasattr(decl, 'type'):
                 llvm_type = self.type_map.get(decl.type, 'i32')
                 for name, dims in decl.names:
-                    if name.upper() in self.user_functions:
+                    name_upper = name.upper()
+                    if name_upper in self.user_functions or name_upper in common_names:
+                        if dims:
+                            resolved_dims = scope_info["declared_dims"].get(name_upper, [])
+                            if resolved_dims:
+                                _, dim_sizes = self._compute_array_layout(resolved_dims)
+                                self.array_bounds[name_upper] = resolved_dims
+                                self.array_dimensions[name_upper] = dim_sizes
                         continue
-                    if name in dim_pending and not dims:
-                        dims = dim_pending.pop(name)
+                    resolved_dims = scope_info["declared_dims"].get(name_upper, [])
                     if name in self.var_alloc:
                         old_alloc_type, old_ptr = self.var_alloc[name]
                         old_base = old_alloc_type.split(' x ')[-1].rstrip(']') if '[' in old_alloc_type else old_alloc_type
@@ -276,60 +698,74 @@ class LLVMGenerator:
                         alloc_type = f"[{char_size} x i8]"
                         local_name = f"%{name}"
                         self.char_lengths[name] = char_size
-                        self.code_lines.append(
-                            f"  {local_name} = alloca {alloc_type}")
+                        self.code_lines.append(f"  {local_name} = alloca {alloc_type}")
                         self.var_alloc[name] = (alloc_type, local_name)
                         continue
-                    elif dims:
-                        size = 1
-                        dim_sizes = []
-                        for d in dims:
-                            if isinstance(d, tuple):
-                                start, end = d
-                                dim_size = (end - start + 1)
-                                size *= dim_size
-                                dim_sizes.append(dim_size)
-                            else:
-                                size *= d
-                                dim_sizes.append(d)
-                        alloc_type = f"[{size} x {llvm_type}]"
+                    if resolved_dims:
+                        size, dim_sizes = self._compute_array_layout(resolved_dims)
                         local_name = f"%{name}"
-
-                        self.array_dimensions[name.upper()] = dim_sizes
+                        alloc_type, local_name = self._allocate_array_storage(local_name, llvm_type, size)
+                        self.array_bounds[name_upper] = resolved_dims
+                        self.array_dimensions[name_upper] = dim_sizes
                     else:
                         alloc_type = llvm_type
                         local_name = f"%{name}"
-                    self.code_lines.append(
-                        f"  {local_name} = alloca {alloc_type}")
+                        self.code_lines.append(f"  {local_name} = alloca {alloc_type}")
                     self.var_alloc[name] = (alloc_type, local_name)
 
-        for name, dims in dim_pending.items():
-            if name in self.var_alloc:
+        for name_upper, dims in scope_info["declared_dims"].items():
+            if name_upper in common_names:
                 continue
-            llvm_type = 'double'
-            implicit_type_name, _ = self._get_implicit_type(name)
-            if implicit_type_name and implicit_type_name != "UNKNOWN":
+            if any(existing_name.upper() == name_upper for existing_name in self.var_alloc):
+                continue
+            llvm_type = scope_info["declared_types"].get(name_upper)
+            if llvm_type is None:
+                implicit_type_name, _ = self._get_scope_implicit_type(
+                    name_upper, scope_info["implicit_none"], scope_info["implicit_rules"]
+                )
                 llvm_type = self.type_map.get(implicit_type_name, 'double')
-            if dims:
-                size = 1
-                dim_sizes = []
-                for d in dims:
-                    if isinstance(d, tuple):
-                        start, end = d
-                        dim_size = (end - start + 1)
-                        size *= dim_size
-                        dim_sizes.append(dim_size)
-                    else:
-                        size *= d
-                        dim_sizes.append(d)
-                alloc_type = f"[{size} x {llvm_type}]"
-                local_name = f"%{name}"
-                self.array_dimensions[name.upper()] = dim_sizes
-            else:
-                alloc_type = llvm_type
-                local_name = f"%{name}"
-            self.code_lines.append(f"  {local_name} = alloca {alloc_type}")
+            size, dim_sizes = self._compute_array_layout(dims)
+            name = name_upper
+            local_name = f"%{name}"
+            alloc_type, local_name = self._allocate_array_storage(local_name, llvm_type, size)
+            self.array_bounds[name_upper] = dims
+            self.array_dimensions[name_upper] = dim_sizes
             self.var_alloc[name] = (alloc_type, local_name)
+
+    def _compute_array_layout(self, dims):
+        size = 1
+        dim_sizes = []
+        for d in dims:
+            if isinstance(d, tuple):
+                start, end = d
+                dim_size = end - start + 1
+            else:
+                dim_size = d
+            size *= dim_size
+            dim_sizes.append(dim_size)
+        return size, dim_sizes
+
+    def _allocate_array_storage(self, local_name: str, llvm_type: str, size: int):
+        total_bytes = size * self._type_size_bytes(llvm_type)
+        if total_bytes > self.heap_array_threshold_bytes:
+            raw_ptr = self._new_local()
+            self.code_lines.append(f"  {raw_ptr} = call i8* @malloc(i64 {total_bytes})")
+            self.code_lines.append(f"  {local_name} = bitcast i8* {raw_ptr} to {llvm_type}*")
+            return llvm_type, local_name
+        alloc_type = f"[{size} x {llvm_type}]"
+        self.code_lines.append(f"  {local_name} = alloca {alloc_type}")
+        return alloc_type, local_name
+
+    def _type_size_bytes(self, llvm_type: str) -> int:
+        if llvm_type == "double":
+            return 8
+        if llvm_type == "i32":
+            return 4
+        if llvm_type == "i1":
+            return 1
+        if llvm_type == "{double, double}":
+            return 16
+        return 8
 
     def _emit_statement(self, stmt: Statement):
         if hasattr(stmt, 'stmt_label') and stmt.stmt_label and not isinstance(stmt, ContinueStatement):
@@ -337,7 +773,9 @@ class LLVMGenerator:
             self._emit_br_if_not_terminated(label_name)
             self.code_lines.append(f"{label_name}:")
             self._set_current_block(label_name)
-        if isinstance(stmt, Assignment):
+        if isinstance(stmt, ParallelDoLoop):
+            self._emit_parallel_do_loop(stmt)
+        elif isinstance(stmt, Assignment):
             self._emit_assignment(stmt)
         elif isinstance(stmt, DoLoop):
             self._emit_do_loop(stmt)
@@ -369,6 +807,8 @@ class LLVMGenerator:
             self._emit_arithmetic_if(stmt)
         elif isinstance(stmt, StopStatement):
             self.code_lines.append("  ret i32 0")
+        elif isinstance(stmt, ExitStatement):
+            self._emit_exit_statement()
 
     def _emit_assignment(self, stmt: Assignment):
         rhs_val, rhs_type = self._emit_expression(stmt.value)
@@ -380,6 +820,14 @@ class LLVMGenerator:
                 base_type = alloc_type if '[' not in alloc_type else alloc_type.split(
                     '[')[1].split(']')[0].split(' x ')[1]
 
+                if base_type != rhs_type and rhs_type in ('i32', 'double') and base_type in ('i32', 'double'):
+                    conv = self._new_local()
+                    if base_type == 'double' and rhs_type == 'i32':
+                        self.code_lines.append(f"  {conv} = sitofp i32 {rhs_val} to double")
+                    else:
+                        self.code_lines.append(f"  {conv} = fptosi double {rhs_val} to i32")
+                    rhs_val = conv
+                    rhs_type = base_type
 
                 linear_idx = self._compute_linear_index(indices_vals, stmt.target)
                 if '[' not in alloc_type:
@@ -393,7 +841,7 @@ class LLVMGenerator:
                         f"  {elem_ptr} = getelementptr inbounds {alloc_type}, "
                         f"{alloc_type}* {ptr_name}, i64 0, i32 {linear_idx}")
                 self.code_lines.append(
-                    f"  store {rhs_type} {rhs_val}, {rhs_type}* {elem_ptr}")
+                    f"  store {base_type} {rhs_val}, {base_type}* {elem_ptr}")
         else:
             if stmt.target not in self.var_alloc:
                 var_name = stmt.target.upper()
@@ -482,8 +930,10 @@ class LLVMGenerator:
                 f"  br i1 {cond}, label %{loop_body_label}, label %{loop_end_label}")
         self.code_lines.append(f"{loop_body_label}:")
         self._set_current_block(loop_body_label)
+        self.loop_exit_stack.append(loop_end_label)
         for body_stmt in stmt.body:
             self._emit_statement(body_stmt)
+        self.loop_exit_stack.pop()
         step = 1
         if stmt.step:
             step_val, _ = self._emit_expression(stmt.step)
@@ -535,8 +985,10 @@ class LLVMGenerator:
             f"  br i1 {cond_val}, label %{loop_body_label}, label %{loop_end_label}")
         self.code_lines.append(f"{loop_body_label}:")
         self._set_current_block(loop_body_label)
+        self.loop_exit_stack.append(loop_end_label)
         for body_stmt in stmt.body:
             self._emit_statement(body_stmt)
+        self.loop_exit_stack.pop()
         self._emit_br_if_not_terminated(loop_label)
         self.code_lines.append(f"{loop_end_label}:")
         self._set_current_block(loop_end_label)
@@ -568,6 +1020,8 @@ class LLVMGenerator:
                 before_phi_vars[var_name] = self.var_ssa_versions[var_name]
             else:
                 alloc_type, ptr_name = self.var_alloc[var_name]
+                if not self._is_phi_trackable_var(var_name, alloc_type):
+                    continue
                 base_type = alloc_type if '[' not in alloc_type else alloc_type.split('[')[1].split(']')[0].split(' x ')[1]
                 before_val = self._new_local()
                 self.code_lines.append(
@@ -678,6 +1132,8 @@ class LLVMGenerator:
                 continue
 
             alloc_type, ptr_name = self.var_alloc[var_name]
+            if not self._is_phi_trackable_var(var_name, alloc_type):
+                continue
             base_type = alloc_type if '[' not in alloc_type else alloc_type.split('[')[1].split(']')[0].split(' x ')[1]
 
             phi_args = []
@@ -719,6 +1175,8 @@ class LLVMGenerator:
                 continue
             if var_name in self.var_ssa_versions:
                 alloc_type, ptr_name = self.var_alloc[var_name]
+                if not self._is_phi_trackable_var(var_name, alloc_type):
+                    continue
                 base_type = alloc_type if '[' not in alloc_type else alloc_type.split('[')[1].split(']')[0].split(' x ')[1]
                 phi_result = self.var_ssa_versions[var_name]
                 self.code_lines.append(
@@ -750,6 +1208,8 @@ class LLVMGenerator:
                 before_phi_vars[var_name] = self.var_ssa_versions[var_name]
             else:
                 alloc_type, ptr_name = self.var_alloc[var_name]
+                if not self._is_phi_trackable_var(var_name, alloc_type):
+                    continue
                 base_type = alloc_type if '[' not in alloc_type else alloc_type.split('[')[1].split(']')[0].split(' x ')[1]
                 before_val = self._new_local()
                 self.code_lines.append(
@@ -773,6 +1233,8 @@ class LLVMGenerator:
                 continue
 
             alloc_type, ptr_name = self.var_alloc[var_name]
+            if not self._is_phi_trackable_var(var_name, alloc_type):
+                continue
             base_type = alloc_type if '[' not in alloc_type else alloc_type.split('[')[1].split(']')[0].split(' x ')[1]
 
             before_val = before_phi_vars[var_name]
@@ -790,6 +1252,8 @@ class LLVMGenerator:
         for var_name in then_phi_vars:
             if var_name in self.var_ssa_versions:
                 alloc_type, ptr_name = self.var_alloc[var_name]
+                if not self._is_phi_trackable_var(var_name, alloc_type):
+                    continue
                 base_type = alloc_type if '[' not in alloc_type else alloc_type.split('[')[1].split(']')[0].split(' x ')[1]
                 phi_result = self.var_ssa_versions[var_name]
                 self.code_lines.append(
@@ -1454,25 +1918,31 @@ class LLVMGenerator:
 
     def _compute_linear_index(self, indices_vals, array_name):
         array_dims = self.array_dimensions.get(array_name.upper(), [])
+        array_bounds = self.array_bounds.get(array_name.upper(), [])
         if len(indices_vals) == 1:
             adjusted = self._new_local()
-            self.code_lines.append(f"  {adjusted} = sub i32 {indices_vals[0]}, 1")
+            lower_bound = array_bounds[0][0] if array_bounds else 1
+            self.code_lines.append(f"  {adjusted} = sub i32 {indices_vals[0]}, {lower_bound}")
             return adjusted
         if not array_dims:
             array_dims = [8] * len(indices_vals)
         while len(array_dims) < len(indices_vals):
             array_dims.append(8)
+        while len(array_bounds) < len(indices_vals):
+            array_bounds.append((1, array_dims[len(array_bounds)]))
         adj_first = self._new_local()
-        self.code_lines.append(f"  {adj_first} = sub i32 {indices_vals[0]}, 1")
+        self.code_lines.append(f"  {adj_first} = sub i32 {indices_vals[0]}, {array_bounds[0][0]}")
         linear = adj_first
+        stride = array_dims[0]
         for k in range(1, len(indices_vals)):
-            dim_k = array_dims[k]
-            mul_tmp = self._new_local()
-            self.code_lines.append(f"  {mul_tmp} = mul i32 {linear}, {dim_k}")
             adj_k = self._new_local()
-            self.code_lines.append(f"  {adj_k} = sub i32 {indices_vals[k]}, 1")
-            linear = self._new_local()
-            self.code_lines.append(f"  {linear} = add i32 {mul_tmp}, {adj_k}")
+            self.code_lines.append(f"  {adj_k} = sub i32 {indices_vals[k]}, {array_bounds[k][0]}")
+            mul_tmp = self._new_local()
+            self.code_lines.append(f"  {mul_tmp} = mul i32 {adj_k}, {stride}")
+            next_linear = self._new_local()
+            self.code_lines.append(f"  {next_linear} = add i32 {linear}, {mul_tmp}")
+            linear = next_linear
+            stride *= array_dims[k]
         return linear
 
     def _convert_to_bool(self, val: str, val_type: str) -> str:
@@ -1580,11 +2050,17 @@ class LLVMGenerator:
             self.code_lines.append(f"{label_name}:")
             self._set_current_block(label_name)
 
+    def _emit_exit_statement(self):
+        if self.loop_exit_stack:
+            self.code_lines.append(f"  br label %{self.loop_exit_stack[-1]}")
+
     def _emit_subroutine(self, sub: Subroutine):
         old_function = self.current_function
         old_var_alloc = self.var_alloc.copy()
         old_local_counter = self.local_counter
         old_block_counter = self.block_counter
+        old_array_dimensions = self.array_dimensions.copy()
+        old_array_bounds = self.array_bounds.copy()
 
         self.current_function = sub.name.upper()
         self.var_alloc = {}
@@ -1593,58 +2069,13 @@ class LLVMGenerator:
         self.var_ssa_versions = {}
         self.phi_tracking = []
         self.current_subroutine_params = sub.params
-
-
-        temp_var_alloc = {}
-        temp_code_lines = []
-        old_code_lines = self.code_lines
-        self.code_lines = temp_code_lines
-        self.var_alloc = temp_var_alloc
-
-
-        for decl in sub.declarations:
-            if isinstance(decl, Declaration):
-                llvm_type = self.type_map.get(decl.type, 'i32')
-                for name, dims in decl.names:
-                    param_upper = name.upper()
-                    if param_upper in [p.upper() for p in sub.params]:
-
-                        if dims:
-
-                            temp_var_alloc[param_upper] = (llvm_type, f"%param_{name}")
-
-                            dim_sizes = []
-                            for d in dims:
-                                if isinstance(d, tuple):
-                                    start, end = d
-                                    dim_size = (end - start + 1)
-                                    dim_sizes.append(dim_size)
-                                else:
-                                    dim_sizes.append(d)
-                            self.array_dimensions[param_upper] = dim_sizes
-                        else:
-
-                            temp_var_alloc[param_upper] = (llvm_type, f"%param_{name}")
-
-
-        self.code_lines = old_code_lines
-        self.var_alloc = {}
-
+        scope_info = self._collect_scope_declaration_info(sub.declarations)
 
         param_list = []
         param_types = {}
         for param in sub.params:
             param_upper = param.upper()
-
-            param_type = "i32"
-            for decl in sub.declarations:
-                if isinstance(decl, Declaration):
-                    for name, dims in decl.names:
-                        if name.upper() == param_upper:
-                            param_type = self.type_map.get(decl.type, 'i32')
-                            break
-                    if param_type != "i32":
-                        break
+            param_type = scope_info["declared_types"].get(param_upper, "i32")
             param_list.append(f"{param_type}* %param_{param}")
             param_types[param_upper] = param_type
 
@@ -1657,6 +2088,11 @@ class LLVMGenerator:
             param_upper = param.upper()
             param_type = param_types[param_upper]
             self.var_alloc[param_upper] = (param_type, f"%param_{param}")
+            if param_upper in scope_info["declared_dims"]:
+                dims = scope_info["declared_dims"][param_upper]
+                _, dim_sizes = self._compute_array_layout(dims)
+                self.array_bounds[param_upper] = dims
+                self.array_dimensions[param_upper] = dim_sizes
 
         self._emit_declarations(sub.declarations)
 
@@ -1674,12 +2110,16 @@ class LLVMGenerator:
         self.local_counter = old_local_counter
         self.block_counter = old_block_counter
         self.current_subroutine_params = []
+        self.array_dimensions = old_array_dimensions
+        self.array_bounds = old_array_bounds
 
     def _emit_function(self, func: FunctionDef):
         old_function = self.current_function
         old_var_alloc = self.var_alloc.copy()
         old_local_counter = self.local_counter
         old_block_counter = self.block_counter
+        old_array_dimensions = self.array_dimensions.copy()
+        old_array_bounds = self.array_bounds.copy()
 
         func_name_upper = func.name.upper()
         self.current_function = func_name_upper
@@ -1688,23 +2128,17 @@ class LLVMGenerator:
         self.block_counter = 0
         self.var_ssa_versions = {}
         self.phi_tracking = []
+        scope_info = self._collect_scope_declaration_info(func.declarations)
 
         return_type = "i32"
         if func.return_type:
             type_map = {'INTEGER': 'i32', 'REAL': 'double', 'LOGICAL': 'i1'}
             return_type = type_map.get(func.return_type.upper(), 'i32')
 
-        param_type_map = {}
-        for decl in func.declarations:
-            if hasattr(decl, 'names') and hasattr(decl, 'type'):
-                llvm_t = self.type_map.get(decl.type, 'i32')
-                for pname, _ in decl.names:
-                    param_type_map[pname.upper()] = llvm_t
-
         param_list = []
         param_types = {}
         for param in func.params:
-            param_type = param_type_map.get(param.upper(), "i32")
+            param_type = scope_info["declared_types"].get(param.upper(), "i32")
             param_list.append(f"{param_type}* %param_{param}")
             param_types[param.upper()] = param_type
 
@@ -1721,6 +2155,11 @@ class LLVMGenerator:
             param_upper = param.upper()
             param_type = param_types[param_upper]
             self.var_alloc[param_upper] = (param_type, f"%param_{param}")
+            if param_upper in scope_info["declared_dims"]:
+                dims = scope_info["declared_dims"][param_upper]
+                _, dim_sizes = self._compute_array_layout(dims)
+                self.array_bounds[param_upper] = dims
+                self.array_dimensions[param_upper] = dim_sizes
 
         self._emit_declarations(func.declarations)
 
@@ -1738,3 +2177,5 @@ class LLVMGenerator:
         self.var_alloc = old_var_alloc
         self.local_counter = old_local_counter
         self.block_counter = old_block_counter
+        self.array_dimensions = old_array_dimensions
+        self.array_bounds = old_array_bounds
