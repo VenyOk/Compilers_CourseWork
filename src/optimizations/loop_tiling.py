@@ -31,6 +31,7 @@ from src.optimizations.loop_analysis import (
     isStencilLikeNest,
     stencilFamily,
     shouldTileNest,
+    uniqueArrayCount,
 )
 
 
@@ -44,6 +45,13 @@ def isTileVar(var: str) -> bool:
 
 def optimalTileSize(depth: int, l1Bytes: int = 32 * 1024, elemSize: int = 8) -> int:
     nElems = max(l1Bytes // elemSize, 16)
+    d = max(depth, 2)
+    size = int(round(nElems ** (1.0 / d))) - 2
+    return max(size, 2)
+
+
+def workingSetTileSize(depth: int, nArrays: int, l1Bytes: int = 32 * 1024, elemSize: int = 8) -> int:
+    nElems = max(l1Bytes // (max(nArrays, 1) * elemSize), 4)
     d = max(depth, 2)
     size = int(round(nElems ** (1.0 / d))) - 2
     return max(size, 2)
@@ -174,13 +182,17 @@ def tileSizesForNest(nest: LoopNest, baseTileSize: Optional[int], l1Bytes: int, 
                 return candidate
         return max(2, min(side, effective))
 
-    if family in {"dirichlet_gs", "coefficient_stencil"} and prefix_depth > 0:
+    if family in {"dirichlet_gs", "coefficient_stencil"}:
+        n_arrays = uniqueArrayCount(nest)
+        ws_size = workingSetTileSize(nest.depth, n_arrays, l1Bytes=l1Bytes)
+        candidates = sorted({ws_size, ws_size - 2, ws_size + 2, ws_size * 2 // 3}, reverse=True)
+        candidates = [c for c in candidates if c >= 2]
         sizes = []
         for index, count in enumerate(trip_counts):
             if index < prefix_depth:
-                sizes.append(chooseCandidate(count, [64, 48, 40, 32, 24, 16, 8], 32))
+                sizes.append(chooseCandidate(count, [48, 32, 24, 16, 8] + candidates, max(candidates[0] if candidates else 16, 8)))
             else:
-                sizes.append(chooseCandidate(count, [50, 64, 40, 32, 25, 20, 16, 12, 8], 32))
+                sizes.append(chooseCandidate(count, candidates + [16, 12, 8], max(candidates[0] if candidates else 16, 4)))
         return sizes
 
     if family == "gauss_seidel":
@@ -190,24 +202,6 @@ def tileSizesForNest(nest: LoopNest, baseTileSize: Optional[int], l1Bytes: int, 
                 sizes.append(chooseCandidate(count, [48, 64, 32, 24, 16, 8], 32))
             else:
                 sizes.append(chooseCandidate(count, [40, 50, 64, 32, 25, 20, 16, 12, 8], 32))
-        return sizes
-
-    if family == "dirichlet_gs":
-        sizes = []
-        for index, count in enumerate(trip_counts):
-            if index < prefix_depth:
-                sizes.append(chooseCandidate(count, [24, 16, 12, 8, 4], 16))
-            else:
-                sizes.append(chooseCandidate(count, [32, 24, 20, 16, 12, 8], 24))
-        return sizes
-
-    if family == "gauss_seidel":
-        sizes = []
-        for index, count in enumerate(trip_counts):
-            if index < prefix_depth:
-                sizes.append(chooseCandidate(count, [24, 16, 12, 8, 4], 16))
-            else:
-                sizes.append(chooseCandidate(count, [24, 20, 16, 12, 8], 16))
         return sizes
 
     if stencil_like and prefix_depth > 0 and access_count >= 5:

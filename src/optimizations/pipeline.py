@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import List, Type
 from src.optimizations.base import ASTOptimizationPass
 from src.optimizations.cse import CommonSubexpressionElimination
+from src.optimizations.dce import DeadCodeElimination
 from src.optimizations.licm import LoopInvariantCodeMotion
 from src.optimizations.loop_interchange import LoopInterchange
 from src.optimizations.loop_intra_tile_interchange import IntraTileLoopInterchange
@@ -11,6 +12,7 @@ from src.optimizations.loop_wavefront import LoopWavefront
 from src.optimizations.affine_linearization import AffineLinearization
 from src.optimizations.generated_declarations import GeneratedVariableDeclarations
 from src.optimizations.loop_parallelization import LoopParallelization
+from src.optimizations.strength_reduction import StrengthReduction
 
 
 def buildPasses(level: int) -> List[Type[ASTOptimizationPass]]:
@@ -18,15 +20,18 @@ def buildPasses(level: int) -> List[Type[ASTOptimizationPass]]:
         return []
     if level == 2:
         return [
+            StrengthReduction,
             LoopInvariantCodeMotion,
             CommonSubexpressionElimination,
             LoopInterchange,
             LoopTiling,
             AffineLinearization,
+            DeadCodeElimination,
             GeneratedVariableDeclarations,
         ]
     if level == 3:
         return [
+            StrengthReduction,
             LoopSkewing,
             LoopTiling,
             IntraTileLoopInterchange,
@@ -35,6 +40,7 @@ def buildPasses(level: int) -> List[Type[ASTOptimizationPass]]:
             AffineLinearization,
             LoopInvariantCodeMotion,
             CommonSubexpressionElimination,
+            DeadCodeElimination,
             GeneratedVariableDeclarations,
         ]
     return []
