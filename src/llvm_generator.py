@@ -120,6 +120,9 @@ class LLVMGenerator:
         self._emit_header()
         self._emit_external_declarations()
         self._emit_common_globals(ast)
+        self.code_lines.append("%struct.ident_t = type { i32, i32, i32, i32, i8* }")
+        self.code_lines.append("@.omp.ident = private global %struct.ident_t { i32 0, i32 2, i32 0, i32 0, i8* null }")
+        self.code_lines.append("")
         self.parallel_type_insert_pos = len(self.code_lines)
         self.parallel_strings_insert_pos = len(self.code_lines)
         self.code_lines.append("; === Глобальные строки (будут заполнены) ===")
@@ -195,7 +198,13 @@ class LLVMGenerator:
         self.code_lines.append("declare double @pow(double, double)")
         self.code_lines.append("declare i32 @abs(i32)")
         self.code_lines.append("declare double @fabs(double)")
-        self.code_lines.append("declare void @fortran_parallel_for_i32(i32, i32, i32, i32, i8*, i8*)")
+        self.code_lines.append("declare void @fortran_parallel_region_launch(i32, i8*, i8*)")
+        self.code_lines.append("declare i32 @fortran_thread_num()")
+        self.code_lines.append("declare i32 @fortran_num_threads()")
+        self.code_lines.append("declare i32 @__kmpc_global_thread_num(%struct.ident_t*)")
+        self.code_lines.append("declare void @__kmpc_fork_call(%struct.ident_t*, i32, void (i32*, i32*, ...)*, ...)")
+        self.code_lines.append("declare void @__kmpc_for_static_init_4(%struct.ident_t*, i32, i32, i32*, i32*, i32*, i32*, i32, i32)")
+        self.code_lines.append("declare void @__kmpc_for_static_fini(%struct.ident_t*, i32)")
         self.code_lines.append("")
 
     def _get_scope_implicit_type(self, name: str, implicit_none: bool, implicit_rules: Dict[str, str]) -> Tuple[str, Optional[int]]:
@@ -397,6 +406,32 @@ class LLVMGenerator:
                 ordered.append(name)
         return ordered
 
+    def _collect_parallel_private_scalars(self, stmts: List[Statement]) -> List[str]:
+        result: List[str] = []
+        for stmt in stmts:
+            if isinstance(stmt, Assignment):
+                if not stmt.indices:
+                    result.append(stmt.target)
+            elif isinstance(stmt, (DoLoop, LabeledDoLoop, ParallelDoLoop)):
+                result.extend(self._collect_parallel_private_scalars(stmt.body))
+            elif isinstance(stmt, IfStatement):
+                result.extend(self._collect_parallel_private_scalars(stmt.then_body))
+                for _, body in stmt.elif_parts:
+                    result.extend(self._collect_parallel_private_scalars(body))
+                if stmt.else_body:
+                    result.extend(self._collect_parallel_private_scalars(stmt.else_body))
+            elif isinstance(stmt, SimpleIfStatement):
+                result.extend(self._collect_parallel_private_scalars([stmt.statement]))
+        ordered = []
+        seen = set()
+        for name in result:
+            key = name.upper()
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append(name)
+        return ordered
+
     def _emit_parallel_worker_function(self, stmt: ParallelDoLoop, env_type_name: str, worker_name: str, captures, private_allocs):
         old_code_lines = self.code_lines
         old_var_alloc = self.var_alloc.copy()
@@ -420,53 +455,90 @@ class LLVMGenerator:
         self.last_block_before_endif = {}
         self.loop_exit_stack = []
 
-        self.code_lines.append(f"define internal void @{worker_name}(i32 %chunk_start, i32 %chunk_end, i8* %env) {{")
+        self.code_lines.append(f"define internal void @{worker_name}(i8* %env) {{")
         self.code_lines.append("entry:")
         self._set_current_block("entry")
 
-        if captures:
-            env_cast = self._new_local()
-            self.code_lines.append(f"  {env_cast} = bitcast i8* %env to {env_type_name}*")
-            for index, (name, alloc_type, _) in enumerate(captures):
-                field_type = f"{alloc_type}*"
-                field_ptr = self._new_local()
-                self.code_lines.append(
-                    f"  {field_ptr} = getelementptr inbounds {env_type_name}, {env_type_name}* {env_cast}, i32 0, i32 {index}"
-                )
-                loaded_ptr = self._new_local()
-                self.code_lines.append(f"  {loaded_ptr} = load {field_type}, {field_type}* {field_ptr}")
-                self.var_alloc[name] = (alloc_type, loaded_ptr)
+        env_cast = self._new_local()
+        self.code_lines.append(f"  {env_cast} = bitcast i8* %env to {env_type_name}*")
+        start_field = self._new_local()
+        self.code_lines.append(f"  {start_field} = getelementptr inbounds {env_type_name}, {env_type_name}* {env_cast}, i32 0, i32 0")
+        start_val = self._new_local()
+        self.code_lines.append(f"  {start_val} = load i32, i32* {start_field}")
+        end_field = self._new_local()
+        self.code_lines.append(f"  {end_field} = getelementptr inbounds {env_type_name}, {env_type_name}* {env_cast}, i32 0, i32 1")
+        end_val = self._new_local()
+        self.code_lines.append(f"  {end_val} = load i32, i32* {end_field}")
+        step_field = self._new_local()
+        self.code_lines.append(f"  {step_field} = getelementptr inbounds {env_type_name}, {env_type_name}* {env_cast}, i32 0, i32 2")
+        step_val = self._new_local()
+        self.code_lines.append(f"  {step_val} = load i32, i32* {step_field}")
+        total_field = self._new_local()
+        self.code_lines.append(f"  {total_field} = getelementptr inbounds {env_type_name}, {env_type_name}* {env_cast}, i32 0, i32 3")
+        total_val = self._new_local()
+        self.code_lines.append(f"  {total_val} = load i32, i32* {total_field}")
+        for index, (name, alloc_type, _) in enumerate(captures):
+            field_type = f"{alloc_type}*"
+            field_ptr = self._new_local()
+            self.code_lines.append(
+                f"  {field_ptr} = getelementptr inbounds {env_type_name}, {env_type_name}* {env_cast}, i32 0, i32 {index + 4}"
+            )
+            loaded_ptr = self._new_local()
+            self.code_lines.append(f"  {loaded_ptr} = load {field_type}, {field_type}* {field_ptr}")
+            self.var_alloc[name] = (alloc_type, loaded_ptr)
 
         for loop_var, alloc_type in private_allocs:
             local_name = f"%{loop_var}"
             self.code_lines.append(f"  {local_name} = alloca {alloc_type}")
             self.var_alloc[loop_var] = (alloc_type, local_name)
 
-        loop_ptr = self._lookup_var_alloc(stmt.var)[1]
-        step_val, _ = self._emit_expression(stmt.step if stmt.step is not None else IntegerLiteral(value=1))
-        loop_id = self._new_block_id()
-        loop_label = f"parallel_loop_{loop_id}"
-        body_label = f"parallel_body_{loop_id}"
-        end_label = f"parallel_end_{loop_id}"
-        self.code_lines.append(f"  store i32 %chunk_start, i32* {loop_ptr}")
-        self.code_lines.append(f"  br label %{loop_label}")
-        self.code_lines.append(f"{loop_label}:")
-        self._set_current_block(loop_label)
-        loop_var = self._new_local()
-        self.code_lines.append(f"  {loop_var} = load i32, i32* {loop_ptr}")
-        cond = self._new_local()
-        self.code_lines.append(f"  {cond} = icmp sle i32 {loop_var}, %chunk_end")
-        self.code_lines.append(f"  br i1 {cond}, label %{body_label}, label %{end_label}")
-        self.code_lines.append(f"{body_label}:")
-        self._set_current_block(body_label)
-        for body_stmt in stmt.body:
-            self._emit_statement(body_stmt)
-        current_val = self._new_local()
-        self.code_lines.append(f"  {current_val} = load i32, i32* {loop_ptr}")
-        next_val = self._new_local()
-        self.code_lines.append(f"  {next_val} = add i32 {current_val}, {step_val}")
-        self.code_lines.append(f"  store i32 {next_val}, i32* {loop_ptr}")
-        self._emit_br_if_not_terminated(loop_label)
+        tid = self._new_local()
+        self.code_lines.append(f"  {tid} = call i32 @fortran_thread_num()")
+        num_threads = self._new_local()
+        self.code_lines.append(f"  {num_threads} = call i32 @fortran_num_threads()")
+        block_size = self._new_local()
+        self.code_lines.append(f"  {block_size} = sdiv i32 {total_val}, {num_threads}")
+        remainder = self._new_local()
+        self.code_lines.append(f"  {remainder} = srem i32 {total_val}, {num_threads}")
+        tid_lt_remainder = self._new_local()
+        self.code_lines.append(f"  {tid_lt_remainder} = icmp slt i32 {tid}, {remainder}")
+        extra_iters = self._new_local()
+        self.code_lines.append(f"  {extra_iters} = zext i1 {tid_lt_remainder} to i32")
+        prefix_extra = self._new_local()
+        self.code_lines.append(f"  {prefix_extra} = select i1 {tid_lt_remainder}, i32 {tid}, i32 {remainder}")
+        scaled_tid = self._new_local()
+        self.code_lines.append(f"  {scaled_tid} = mul i32 {tid}, {block_size}")
+        begin_iter = self._new_local()
+        self.code_lines.append(f"  {begin_iter} = add i32 {scaled_tid}, {prefix_extra}")
+        local_count = self._new_local()
+        self.code_lines.append(f"  {local_count} = add i32 {block_size}, {extra_iters}")
+        has_work = self._new_local()
+        self.code_lines.append(f"  {has_work} = icmp sgt i32 {local_count}, 0")
+        work_label = f"parallel_work_{self._new_block_id()}"
+        end_label = f"parallel_end_{self._new_block_id()}"
+        self.code_lines.append(f"  br i1 {has_work}, label %{work_label}, label %{end_label}")
+        self.code_lines.append(f"{work_label}:")
+        self._set_current_block(work_label)
+        last_count = self._new_local()
+        self.code_lines.append(f"  {last_count} = sub i32 {local_count}, 1")
+        end_iter = self._new_local()
+        self.code_lines.append(f"  {end_iter} = add i32 {begin_iter}, {last_count}")
+        begin_offset = self._new_local()
+        self.code_lines.append(f"  {begin_offset} = mul i32 {begin_iter}, {step_val}")
+        chunk_start = self._new_local()
+        self.code_lines.append(f"  {chunk_start} = add i32 {start_val}, {begin_offset}")
+        end_offset = self._new_local()
+        self.code_lines.append(f"  {end_offset} = mul i32 {end_iter}, {step_val}")
+        chunk_end = self._new_local()
+        self.code_lines.append(f"  {chunk_end} = add i32 {start_val}, {end_offset}")
+        self._emit_do_loop_with_bounds(
+            stmt,
+            chunk_start,
+            chunk_end,
+            step_val,
+            assume_positive_step=stmt.step is None or (isinstance(stmt.step, IntegerLiteral) and stmt.step.value > 0),
+        )
+        self._emit_br_if_not_terminated(end_label)
         self.code_lines.append(f"{end_label}:")
         self._set_current_block(end_label)
         self.code_lines.append("  ret void")
@@ -485,8 +557,139 @@ class LLVMGenerator:
         self.loop_exit_stack = old_loop_exit_stack
         return "\n".join(lines)
 
-    def _emit_parallel_do_loop(self, stmt: ParallelDoLoop):
-        private_names = [stmt.var] + self._collect_parallel_loop_vars(stmt.body) + list(stmt.private_vars)
+    def _emit_openmp_outlined_function(self, stmt: ParallelDoLoop, env_type_name: str, worker_name: str, captures, private_allocs):
+        old_code_lines = self.code_lines
+        old_var_alloc = self.var_alloc.copy()
+        old_local_counter = self.local_counter
+        old_block_counter = self.block_counter
+        old_current_block = self.current_block
+        old_current_function = getattr(self, "current_function", "main")
+        old_phi_tracking = self.phi_tracking
+        old_var_ssa_versions = self.var_ssa_versions
+        old_last_block_before_endif = self.last_block_before_endif
+        old_loop_exit_stack = self.loop_exit_stack
+        lines: List[str] = []
+        self.code_lines = lines
+        self.var_alloc = {}
+        self.local_counter = 0
+        self.block_counter = 0
+        self.current_block = "entry"
+        self.current_function = worker_name
+        self.phi_tracking = []
+        self.var_ssa_versions = {}
+        self.last_block_before_endif = {}
+        self.loop_exit_stack = []
+
+        self.code_lines.append(f"define internal void @{worker_name}(i32* %gtid.addr, i32* %btid.addr, {env_type_name}* %env) {{")
+        self.code_lines.append("entry:")
+        self._set_current_block("entry")
+
+        start_field = self._new_local()
+        self.code_lines.append(f"  {start_field} = getelementptr inbounds {env_type_name}, {env_type_name}* %env, i32 0, i32 0")
+        start_val = self._new_local()
+        self.code_lines.append(f"  {start_val} = load i32, i32* {start_field}")
+        end_field = self._new_local()
+        self.code_lines.append(f"  {end_field} = getelementptr inbounds {env_type_name}, {env_type_name}* %env, i32 0, i32 1")
+        end_val = self._new_local()
+        self.code_lines.append(f"  {end_val} = load i32, i32* {end_field}")
+        step_field = self._new_local()
+        self.code_lines.append(f"  {step_field} = getelementptr inbounds {env_type_name}, {env_type_name}* %env, i32 0, i32 2")
+        step_val = self._new_local()
+        self.code_lines.append(f"  {step_val} = load i32, i32* {step_field}")
+        total_field = self._new_local()
+        self.code_lines.append(f"  {total_field} = getelementptr inbounds {env_type_name}, {env_type_name}* %env, i32 0, i32 3")
+        total_val = self._new_local()
+        self.code_lines.append(f"  {total_val} = load i32, i32* {total_field}")
+        for index, (name, alloc_type, _) in enumerate(captures):
+            field_type = f"{alloc_type}*"
+            field_ptr = self._new_local()
+            self.code_lines.append(
+                f"  {field_ptr} = getelementptr inbounds {env_type_name}, {env_type_name}* %env, i32 0, i32 {index + 4}"
+            )
+            loaded_ptr = self._new_local()
+            self.code_lines.append(f"  {loaded_ptr} = load {field_type}, {field_type}* {field_ptr}")
+            self.var_alloc[name] = (alloc_type, loaded_ptr)
+
+        for loop_var, alloc_type in private_allocs:
+            local_name = f"%{loop_var}"
+            self.code_lines.append(f"  {local_name} = alloca {alloc_type}")
+            self.var_alloc[loop_var] = (alloc_type, local_name)
+
+        gtid = self._new_local()
+        self.code_lines.append(f"  {gtid} = load i32, i32* %gtid.addr")
+        last_ptr = self._new_local()
+        self.code_lines.append(f"  {last_ptr} = alloca i32")
+        lb_ptr = self._new_local()
+        self.code_lines.append(f"  {lb_ptr} = alloca i32")
+        ub_ptr = self._new_local()
+        self.code_lines.append(f"  {ub_ptr} = alloca i32")
+        stride_ptr = self._new_local()
+        self.code_lines.append(f"  {stride_ptr} = alloca i32")
+        upper_limit = self._new_local()
+        self.code_lines.append(f"  {upper_limit} = sub i32 {total_val}, 1")
+        self.code_lines.append(f"  store i32 0, i32* {last_ptr}")
+        self.code_lines.append(f"  store i32 0, i32* {lb_ptr}")
+        self.code_lines.append(f"  store i32 {upper_limit}, i32* {ub_ptr}")
+        self.code_lines.append(f"  store i32 1, i32* {stride_ptr}")
+        self.code_lines.append(
+            f"  call void @__kmpc_for_static_init_4(%struct.ident_t* @.omp.ident, i32 {gtid}, i32 34, i32* {last_ptr}, i32* {lb_ptr}, i32* {ub_ptr}, i32* {stride_ptr}, i32 1, i32 1)"
+        )
+        scheduled_lb = self._new_local()
+        self.code_lines.append(f"  {scheduled_lb} = load i32, i32* {lb_ptr}")
+        scheduled_ub_raw = self._new_local()
+        self.code_lines.append(f"  {scheduled_ub_raw} = load i32, i32* {ub_ptr}")
+        ub_in_range = self._new_local()
+        self.code_lines.append(f"  {ub_in_range} = icmp sle i32 {scheduled_ub_raw}, {upper_limit}")
+        scheduled_ub = self._new_local()
+        self.code_lines.append(f"  {scheduled_ub} = select i1 {ub_in_range}, i32 {scheduled_ub_raw}, i32 {upper_limit}")
+        has_work = self._new_local()
+        self.code_lines.append(f"  {has_work} = icmp sle i32 {scheduled_lb}, {scheduled_ub}")
+        work_label = f"omp_for_work_{self._new_block_id()}"
+        fini_label = f"omp_for_fini_{self._new_block_id()}"
+        end_label = f"omp_for_end_{self._new_block_id()}"
+        self.code_lines.append(f"  br i1 {has_work}, label %{work_label}, label %{fini_label}")
+        self.code_lines.append(f"{work_label}:")
+        self._set_current_block(work_label)
+        lower_offset = self._new_local()
+        self.code_lines.append(f"  {lower_offset} = mul i32 {scheduled_lb}, {step_val}")
+        chunk_start = self._new_local()
+        self.code_lines.append(f"  {chunk_start} = add i32 {start_val}, {lower_offset}")
+        upper_offset = self._new_local()
+        self.code_lines.append(f"  {upper_offset} = mul i32 {scheduled_ub}, {step_val}")
+        chunk_end = self._new_local()
+        self.code_lines.append(f"  {chunk_end} = add i32 {start_val}, {upper_offset}")
+        self._emit_do_loop_with_bounds(
+            stmt,
+            chunk_start,
+            chunk_end,
+            step_val,
+            assume_positive_step=stmt.step is None or (isinstance(stmt.step, IntegerLiteral) and stmt.step.value > 0),
+        )
+        self._emit_br_if_not_terminated(fini_label)
+        self.code_lines.append(f"{fini_label}:")
+        self._set_current_block(fini_label)
+        self.code_lines.append(f"  call void @__kmpc_for_static_fini(%struct.ident_t* @.omp.ident, i32 {gtid})")
+        self.code_lines.append(f"  br label %{end_label}")
+        self.code_lines.append(f"{end_label}:")
+        self._set_current_block(end_label)
+        self.code_lines.append("  ret void")
+        self.code_lines.append("}")
+        self.code_lines.append("")
+
+        self.code_lines = old_code_lines
+        self.var_alloc = old_var_alloc
+        self.local_counter = old_local_counter
+        self.block_counter = old_block_counter
+        self.current_block = old_current_block
+        self.current_function = old_current_function
+        self.phi_tracking = old_phi_tracking
+        self.var_ssa_versions = old_var_ssa_versions
+        self.last_block_before_endif = old_last_block_before_endif
+        self.loop_exit_stack = old_loop_exit_stack
+        return "\n".join(lines)
+
+    def _emit_openmp_parallel_do_loop(self, stmt: ParallelDoLoop):
+        private_names = [stmt.var] + self._collect_parallel_loop_vars(stmt.body) + self._collect_parallel_private_scalars(stmt.body) + list(stmt.private_vars)
         ordered_private_names = []
         private_seen = set()
         for name in private_names:
@@ -506,60 +709,106 @@ class LLVMGenerator:
             alloc = self._lookup_var_alloc(name)
             alloc_type = alloc[0] if alloc is not None else "i32"
             private_allocs.append((name, alloc_type))
+        start_val, _ = self._emit_expression(stmt.start)
+        end_val, _ = self._emit_expression(stmt.end)
+        step_val, _ = self._emit_expression(stmt.step if stmt.step is not None else IntegerLiteral(value=1))
+        step_positive = self._new_local()
+        self.code_lines.append(f"  {step_positive} = icmp sgt i32 {step_val}, 0")
+        forward_cond = self._new_local()
+        self.code_lines.append(f"  {forward_cond} = icmp sle i32 {start_val}, {end_val}")
+        reverse_cond = self._new_local()
+        self.code_lines.append(f"  {reverse_cond} = icmp sge i32 {start_val}, {end_val}")
+        has_iters = self._new_local()
+        self.code_lines.append(f"  {has_iters} = select i1 {step_positive}, i1 {forward_cond}, i1 {reverse_cond}")
+        delta_forward = self._new_local()
+        self.code_lines.append(f"  {delta_forward} = sub i32 {end_val}, {start_val}")
+        delta_reverse = self._new_local()
+        self.code_lines.append(f"  {delta_reverse} = sub i32 {start_val}, {end_val}")
+        delta = self._new_local()
+        self.code_lines.append(f"  {delta} = select i1 {step_positive}, i32 {delta_forward}, i32 {delta_reverse}")
+        neg_step = self._new_local()
+        self.code_lines.append(f"  {neg_step} = sub i32 0, {step_val}")
+        abs_step = self._new_local()
+        self.code_lines.append(f"  {abs_step} = select i1 {step_positive}, i32 {step_val}, i32 {neg_step}")
+        trip_div = self._new_local()
+        self.code_lines.append(f"  {trip_div} = sdiv i32 {delta}, {abs_step}")
+        total_iters = self._new_local()
+        self.code_lines.append(f"  {total_iters} = add i32 {trip_div}, 1")
+        profitable = self._new_local()
+        self.code_lines.append(f"  {profitable} = icmp sgt i32 {total_iters}, {max(2, stmt.grain * 2)}")
         env_type_name = f"%parallel_env_{self.parallel_struct_counter}"
         self.parallel_struct_counter += 1
         if captures:
-            env_fields = ", ".join(f"{alloc_type}*" for _, alloc_type, _ in captures)
+            env_fields = ", ".join(["i32", "i32", "i32", "i32"] + [f"{alloc_type}*" for _, alloc_type, _ in captures])
         else:
-            env_fields = "i8"
+            env_fields = "i32, i32, i32, i32, i8"
         self._insert_parallel_type(f"{env_type_name} = type {{ {env_fields} }}")
+
+        worker_name = f"omp_outlined_{self.parallel_worker_counter}"
+        self.parallel_worker_counter += 1
+        self.deferred_functions.append(
+            self._emit_openmp_outlined_function(stmt, env_type_name, worker_name, captures, private_allocs)
+        )
+
+        loop_alloc = self._lookup_var_alloc(stmt.var)
+        exec_label = f"parallel_exec_{self._new_block_id()}"
+        serial_label = f"parallel_serial_{self._new_block_id()}"
+        openmp_label = f"parallel_openmp_{self._new_block_id()}"
+        skip_label = f"parallel_skip_{self._new_block_id()}"
+        done_label = f"parallel_done_{self._new_block_id()}"
+        self.code_lines.append(f"  br i1 {has_iters}, label %{exec_label}, label %{skip_label}")
+        self.code_lines.append(f"{exec_label}:")
+        self._set_current_block(exec_label)
+        self.code_lines.append(f"  br i1 {profitable}, label %{openmp_label}, label %{serial_label}")
+        self.code_lines.append(f"{serial_label}:")
+        self._set_current_block(serial_label)
+        self._emit_do_loop_with_bounds(
+            stmt,
+            start_val,
+            end_val,
+            step_val,
+            assume_positive_step=stmt.step is None or (isinstance(stmt.step, IntegerLiteral) and stmt.step.value > 0),
+        )
+        self._emit_br_if_not_terminated(done_label)
+        self.code_lines.append(f"{openmp_label}:")
+        self._set_current_block(openmp_label)
         env_alloc = self._new_local()
         self.code_lines.append(f"  {env_alloc} = alloca {env_type_name}")
+        start_field = self._new_local()
+        self.code_lines.append(f"  {start_field} = getelementptr inbounds {env_type_name}, {env_type_name}* {env_alloc}, i32 0, i32 0")
+        self.code_lines.append(f"  store i32 {start_val}, i32* {start_field}")
+        end_field = self._new_local()
+        self.code_lines.append(f"  {end_field} = getelementptr inbounds {env_type_name}, {env_type_name}* {env_alloc}, i32 0, i32 1")
+        self.code_lines.append(f"  store i32 {end_val}, i32* {end_field}")
+        step_field = self._new_local()
+        self.code_lines.append(f"  {step_field} = getelementptr inbounds {env_type_name}, {env_type_name}* {env_alloc}, i32 0, i32 2")
+        self.code_lines.append(f"  store i32 {step_val}, i32* {step_field}")
+        total_field = self._new_local()
+        self.code_lines.append(f"  {total_field} = getelementptr inbounds {env_type_name}, {env_type_name}* {env_alloc}, i32 0, i32 3")
+        self.code_lines.append(f"  store i32 {total_iters}, i32* {total_field}")
         if captures:
             for index, (_, alloc_type, ptr_name) in enumerate(captures):
                 field_type = f"{alloc_type}*"
                 field_ptr = self._new_local()
                 self.code_lines.append(
-                    f"  {field_ptr} = getelementptr inbounds {env_type_name}, {env_type_name}* {env_alloc}, i32 0, i32 {index}"
+                    f"  {field_ptr} = getelementptr inbounds {env_type_name}, {env_type_name}* {env_alloc}, i32 0, i32 {index + 4}"
                 )
                 self.code_lines.append(f"  store {field_type} {ptr_name}, {field_type}* {field_ptr}")
         else:
-            field_ptr = self._new_local()
-            self.code_lines.append(
-                f"  {field_ptr} = getelementptr inbounds {env_type_name}, {env_type_name}* {env_alloc}, i32 0, i32 0"
-            )
-            self.code_lines.append(f"  store i8 0, i8* {field_ptr}")
-
-        worker_name = f"parallel_worker_{self.parallel_worker_counter}"
-        self.parallel_worker_counter += 1
-        self.deferred_functions.append(
-            self._emit_parallel_worker_function(stmt, env_type_name, worker_name, captures, private_allocs)
-        )
-
-        start_val, _ = self._emit_expression(stmt.start)
-        end_val, _ = self._emit_expression(stmt.end)
-        step_val, _ = self._emit_expression(stmt.step if stmt.step is not None else IntegerLiteral(value=1))
-        env_i8 = self._new_local()
-        self.code_lines.append(f"  {env_i8} = bitcast {env_type_name}* {env_alloc} to i8*")
+            pad_field = self._new_local()
+            self.code_lines.append(f"  {pad_field} = getelementptr inbounds {env_type_name}, {env_type_name}* {env_alloc}, i32 0, i32 4")
+            self.code_lines.append(f"  store i8 0, i8* {pad_field}")
+        caller_gtid = self._new_local()
+        self.code_lines.append(f"  {caller_gtid} = call i32 @__kmpc_global_thread_num(%struct.ident_t* @.omp.ident)")
         worker_ptr = self._new_local()
-        self.code_lines.append(f"  {worker_ptr} = bitcast void (i32, i32, i8*)* @{worker_name} to i8*")
-
-        loop_alloc = self._lookup_var_alloc(stmt.var)
+        self.code_lines.append(
+            f"  {worker_ptr} = bitcast void (i32*, i32*, {env_type_name}*)* @{worker_name} to void (i32*, i32*, ...)*"
+        )
+        self.code_lines.append(
+            f"  call void (%struct.ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_call(%struct.ident_t* @.omp.ident, i32 1, void (i32*, i32*, ...)* {worker_ptr}, {env_type_name}* {env_alloc})"
+        )
         if loop_alloc is not None:
             loop_alloc_type, loop_ptr = loop_alloc
-            self.code_lines.append(f"  store i32 {start_val}, i32* {loop_ptr}")
-        cond = self._new_local()
-        self.code_lines.append(f"  {cond} = icmp sle i32 {start_val}, {end_val}")
-        exec_label = f"parallel_exec_{self._new_block_id()}"
-        skip_label = f"parallel_skip_{self._new_block_id()}"
-        done_label = f"parallel_done_{self._new_block_id()}"
-        self.code_lines.append(f"  br i1 {cond}, label %{exec_label}, label %{skip_label}")
-        self.code_lines.append(f"{exec_label}:")
-        self._set_current_block(exec_label)
-        self.code_lines.append(
-            f"  call void @fortran_parallel_for_i32(i32 {start_val}, i32 {end_val}, i32 {step_val}, i32 {stmt.grain}, i8* {env_i8}, i8* {worker_ptr})"
-        )
-        if loop_alloc is not None:
             final_val = self._new_local()
             self.code_lines.append(f"  {final_val} = add i32 {end_val}, {step_val}")
             self.code_lines.append(f"  store i32 {final_val}, i32* {loop_ptr}")
@@ -569,6 +818,157 @@ class LLVMGenerator:
         self.code_lines.append(f"  br label %{done_label}")
         self.code_lines.append(f"{done_label}:")
         self._set_current_block(done_label)
+
+    def _emit_runtime_parallel_do_loop(self, stmt: ParallelDoLoop):
+        private_names = [stmt.var] + self._collect_parallel_loop_vars(stmt.body) + self._collect_parallel_private_scalars(stmt.body) + list(stmt.private_vars)
+        ordered_private_names = []
+        private_seen = set()
+        for name in private_names:
+            name_upper = name.upper()
+            if name_upper in private_seen:
+                continue
+            private_seen.add(name_upper)
+            ordered_private_names.append(name)
+        private_set = {name.upper() for name in ordered_private_names}
+        captures = [
+            (name, alloc_type, ptr_name)
+            for name, (alloc_type, ptr_name) in self.var_alloc.items()
+            if name.upper() not in private_set
+        ]
+        private_allocs = []
+        for name in ordered_private_names:
+            alloc = self._lookup_var_alloc(name)
+            alloc_type = alloc[0] if alloc is not None else "i32"
+            private_allocs.append((name, alloc_type))
+        start_val, _ = self._emit_expression(stmt.start)
+        end_val, _ = self._emit_expression(stmt.end)
+        step_val, _ = self._emit_expression(stmt.step if stmt.step is not None else IntegerLiteral(value=1))
+        step_positive = self._new_local()
+        self.code_lines.append(f"  {step_positive} = icmp sgt i32 {step_val}, 0")
+        forward_cond = self._new_local()
+        self.code_lines.append(f"  {forward_cond} = icmp sle i32 {start_val}, {end_val}")
+        reverse_cond = self._new_local()
+        self.code_lines.append(f"  {reverse_cond} = icmp sge i32 {start_val}, {end_val}")
+        has_iters = self._new_local()
+        self.code_lines.append(f"  {has_iters} = select i1 {step_positive}, i1 {forward_cond}, i1 {reverse_cond}")
+        delta_forward = self._new_local()
+        self.code_lines.append(f"  {delta_forward} = sub i32 {end_val}, {start_val}")
+        delta_reverse = self._new_local()
+        self.code_lines.append(f"  {delta_reverse} = sub i32 {start_val}, {end_val}")
+        delta = self._new_local()
+        self.code_lines.append(f"  {delta} = select i1 {step_positive}, i32 {delta_forward}, i32 {delta_reverse}")
+        neg_step = self._new_local()
+        self.code_lines.append(f"  {neg_step} = sub i32 0, {step_val}")
+        abs_step = self._new_local()
+        self.code_lines.append(f"  {abs_step} = select i1 {step_positive}, i32 {step_val}, i32 {neg_step}")
+        trip_div = self._new_local()
+        self.code_lines.append(f"  {trip_div} = sdiv i32 {delta}, {abs_step}")
+        total_iters = self._new_local()
+        self.code_lines.append(f"  {total_iters} = add i32 {trip_div}, 1")
+        profitable = self._new_local()
+        self.code_lines.append(f"  {profitable} = icmp sgt i32 {total_iters}, {max(2, stmt.grain * 2)}")
+        thread_budget_raw = self._new_local()
+        self.code_lines.append(f"  {thread_budget_raw} = sdiv i32 {total_iters}, {max(1, stmt.grain)}")
+        thread_budget_valid = self._new_local()
+        self.code_lines.append(f"  {thread_budget_valid} = icmp sgt i32 {thread_budget_raw}, 0")
+        thread_budget = self._new_local()
+        self.code_lines.append(f"  {thread_budget} = select i1 {thread_budget_valid}, i32 {thread_budget_raw}, i32 1")
+        if stmt.threads_hint > 0:
+            hint_bound = self._new_local()
+            self.code_lines.append(f"  {hint_bound} = icmp slt i32 {thread_budget}, {stmt.threads_hint}")
+            requested_threads = self._new_local()
+            self.code_lines.append(f"  {requested_threads} = select i1 {hint_bound}, i32 {thread_budget}, i32 {stmt.threads_hint}")
+        else:
+            auto_bound = self._new_local()
+            self.code_lines.append(f"  {auto_bound} = icmp slt i32 {thread_budget}, 8")
+            requested_threads = self._new_local()
+            self.code_lines.append(f"  {requested_threads} = select i1 {auto_bound}, i32 {thread_budget}, i32 8")
+        env_type_name = f"%parallel_env_{self.parallel_struct_counter}"
+        self.parallel_struct_counter += 1
+        if captures:
+            env_fields = ", ".join(["i32", "i32", "i32", "i32"] + [f"{alloc_type}*" for _, alloc_type, _ in captures])
+        else:
+            env_fields = "i32, i32, i32, i32, i8"
+        self._insert_parallel_type(f"{env_type_name} = type {{ {env_fields} }}")
+
+        worker_name = f"parallel_worker_{self.parallel_worker_counter}"
+        self.parallel_worker_counter += 1
+        self.deferred_functions.append(
+            self._emit_parallel_worker_function(stmt, env_type_name, worker_name, captures, private_allocs)
+        )
+
+        loop_alloc = self._lookup_var_alloc(stmt.var)
+        exec_label = f"parallel_exec_{self._new_block_id()}"
+        serial_label = f"parallel_serial_{self._new_block_id()}"
+        runtime_label = f"parallel_runtime_{self._new_block_id()}"
+        skip_label = f"parallel_skip_{self._new_block_id()}"
+        done_label = f"parallel_done_{self._new_block_id()}"
+        self.code_lines.append(f"  br i1 {has_iters}, label %{exec_label}, label %{skip_label}")
+        self.code_lines.append(f"{exec_label}:")
+        self._set_current_block(exec_label)
+        self.code_lines.append(f"  br i1 {profitable}, label %{runtime_label}, label %{serial_label}")
+        self.code_lines.append(f"{serial_label}:")
+        self._set_current_block(serial_label)
+        self._emit_do_loop_with_bounds(
+            stmt,
+            start_val,
+            end_val,
+            step_val,
+            assume_positive_step=stmt.step is None or (isinstance(stmt.step, IntegerLiteral) and stmt.step.value > 0),
+        )
+        self._emit_br_if_not_terminated(done_label)
+        self.code_lines.append(f"{runtime_label}:")
+        self._set_current_block(runtime_label)
+        env_alloc = self._new_local()
+        self.code_lines.append(f"  {env_alloc} = alloca {env_type_name}")
+        start_field = self._new_local()
+        self.code_lines.append(f"  {start_field} = getelementptr inbounds {env_type_name}, {env_type_name}* {env_alloc}, i32 0, i32 0")
+        self.code_lines.append(f"  store i32 {start_val}, i32* {start_field}")
+        end_field = self._new_local()
+        self.code_lines.append(f"  {end_field} = getelementptr inbounds {env_type_name}, {env_type_name}* {env_alloc}, i32 0, i32 1")
+        self.code_lines.append(f"  store i32 {end_val}, i32* {end_field}")
+        step_field = self._new_local()
+        self.code_lines.append(f"  {step_field} = getelementptr inbounds {env_type_name}, {env_type_name}* {env_alloc}, i32 0, i32 2")
+        self.code_lines.append(f"  store i32 {step_val}, i32* {step_field}")
+        total_field = self._new_local()
+        self.code_lines.append(f"  {total_field} = getelementptr inbounds {env_type_name}, {env_type_name}* {env_alloc}, i32 0, i32 3")
+        self.code_lines.append(f"  store i32 {total_iters}, i32* {total_field}")
+        if captures:
+            for index, (_, alloc_type, ptr_name) in enumerate(captures):
+                field_type = f"{alloc_type}*"
+                field_ptr = self._new_local()
+                self.code_lines.append(
+                    f"  {field_ptr} = getelementptr inbounds {env_type_name}, {env_type_name}* {env_alloc}, i32 0, i32 {index + 4}"
+                )
+                self.code_lines.append(f"  store {field_type} {ptr_name}, {field_type}* {field_ptr}")
+        else:
+            pad_field = self._new_local()
+            self.code_lines.append(f"  {pad_field} = getelementptr inbounds {env_type_name}, {env_type_name}* {env_alloc}, i32 0, i32 4")
+            self.code_lines.append(f"  store i8 0, i8* {pad_field}")
+        env_i8 = self._new_local()
+        self.code_lines.append(f"  {env_i8} = bitcast {env_type_name}* {env_alloc} to i8*")
+        worker_ptr = self._new_local()
+        self.code_lines.append(f"  {worker_ptr} = bitcast void (i8*)* @{worker_name} to i8*")
+        self.code_lines.append(
+            f"  call void @fortran_parallel_region_launch(i32 {requested_threads}, i8* {worker_ptr}, i8* {env_i8})"
+        )
+        if loop_alloc is not None:
+            loop_alloc_type, loop_ptr = loop_alloc
+            final_val = self._new_local()
+            self.code_lines.append(f"  {final_val} = add i32 {end_val}, {step_val}")
+            self.code_lines.append(f"  store i32 {final_val}, i32* {loop_ptr}")
+        self.code_lines.append(f"  br label %{done_label}")
+        self.code_lines.append(f"{skip_label}:")
+        self._set_current_block(skip_label)
+        self.code_lines.append(f"  br label %{done_label}")
+        self.code_lines.append(f"{done_label}:")
+        self._set_current_block(done_label)
+
+    def _emit_parallel_do_loop(self, stmt: ParallelDoLoop):
+        if stmt.backend == "openmp":
+            self._emit_openmp_parallel_do_loop(stmt)
+            return
+        self._emit_runtime_parallel_do_loop(stmt)
 
     def _get_implicit_type(self, name: str) -> Tuple[str, Optional[int]]:
         if not name:
@@ -900,68 +1300,62 @@ class LLVMGenerator:
                         self.code_lines.append(
                             f"  store {base_type} {rhs_val}, {base_type}* {ptr_name}")
 
-    def _emit_do_loop(self, stmt: DoLoop):
+    def _emit_do_loop_with_bounds(self, stmt: DoLoop, start_val: str, end_val: str, step_val: str, assume_positive_step: bool = False):
         loop_id = self._new_block_id()
         loop_label = f"loop_{loop_id}"
         loop_body_label = f"loop_body_{loop_id}"
         loop_end_label = f"loop_end_{loop_id}"
-        start_val, _ = self._emit_expression(stmt.start)
-        if stmt.var in self.var_alloc:
-            alloc_type, ptr = self.var_alloc[stmt.var]
-            base_type = alloc_type if '[' not in alloc_type else alloc_type.split(
-                '[')[1].split(']')[0].split(' x ')[1]
-            self.code_lines.append(
-                f"  store {base_type} {start_val}, {base_type}* {ptr}")
+        loop_alloc = self._lookup_var_alloc(stmt.var)
+        if loop_alloc is not None:
+            alloc_type, ptr = loop_alloc
+            base_type = alloc_type if '[' not in alloc_type else alloc_type.split('[')[1].split(']')[0].split(' x ')[1]
+            self.code_lines.append(f"  store {base_type} {start_val}, {base_type}* {ptr}")
         self.code_lines.append(f"  br label %{loop_label}")
         self.code_lines.append(f"{loop_label}:")
         self._set_current_block(loop_label)
-        if stmt.var in self.var_alloc:
-            alloc_type, ptr = self.var_alloc[stmt.var]
-            base_type = alloc_type if '[' not in alloc_type else alloc_type.split(
-                '[')[1].split(']')[0].split(' x ')[1]
+        if loop_alloc is not None:
+            alloc_type, ptr = loop_alloc
+            base_type = alloc_type if '[' not in alloc_type else alloc_type.split('[')[1].split(']')[0].split(' x ')[1]
             loop_var = self._new_local()
-            self.code_lines.append(
-                f"  {loop_var} = load {base_type}, {base_type}* {ptr}")
-            end_val, _ = self._emit_expression(stmt.end)
+            self.code_lines.append(f"  {loop_var} = load {base_type}, {base_type}* {ptr}")
             cond = self._new_local()
-            self.code_lines.append(
-                f"  {cond} = icmp sle {base_type} {loop_var}, {end_val}")
-            self.code_lines.append(
-                f"  br i1 {cond}, label %{loop_body_label}, label %{loop_end_label}")
+            if assume_positive_step:
+                self.code_lines.append(f"  {cond} = icmp sle {base_type} {loop_var}, {end_val}")
+            else:
+                step_positive = self._new_local()
+                self.code_lines.append(f"  {step_positive} = icmp sgt {base_type} {step_val}, 0")
+                cond_positive = self._new_local()
+                self.code_lines.append(f"  {cond_positive} = icmp sle {base_type} {loop_var}, {end_val}")
+                cond_negative = self._new_local()
+                self.code_lines.append(f"  {cond_negative} = icmp sge {base_type} {loop_var}, {end_val}")
+                self.code_lines.append(f"  {cond} = select i1 {step_positive}, i1 {cond_positive}, i1 {cond_negative}")
+            self.code_lines.append(f"  br i1 {cond}, label %{loop_body_label}, label %{loop_end_label}")
         self.code_lines.append(f"{loop_body_label}:")
         self._set_current_block(loop_body_label)
         self.loop_exit_stack.append(loop_end_label)
         for body_stmt in stmt.body:
             self._emit_statement(body_stmt)
         self.loop_exit_stack.pop()
-        step = 1
-        if stmt.step:
-            step_val, _ = self._emit_expression(stmt.step)
-            step = step_val
-        else:
-            step_val = self._new_local()
-            self.code_lines.append(
-                f"  {step_val} = add {base_type} {loop_var}, 1")
-            step = step_val
-        if stmt.var in self.var_alloc:
-            alloc_type, ptr = self.var_alloc[stmt.var]
-            base_type = alloc_type if '[' not in alloc_type else alloc_type.split(
-                '[')[1].split(']')[0].split(' x ')[1]
+        if loop_alloc is not None:
+            alloc_type, ptr = loop_alloc
+            base_type = alloc_type if '[' not in alloc_type else alloc_type.split('[')[1].split(']')[0].split(' x ')[1]
             loop_var = self._new_local()
-            self.code_lines.append(
-                f"  {loop_var} = load {base_type}, {base_type}* {ptr}")
+            self.code_lines.append(f"  {loop_var} = load {base_type}, {base_type}* {ptr}")
             next_val = self._new_local()
-            self.code_lines.append(
-                f"  {next_val} = add {base_type} {loop_var}, {step}")
-            self.code_lines.append(
-                f"  store {base_type} {next_val}, {base_type}* {ptr}")
+            self.code_lines.append(f"  {next_val} = add {base_type} {loop_var}, {step_val}")
+            self.code_lines.append(f"  store {base_type} {next_val}, {base_type}* {ptr}")
         self._emit_br_if_not_terminated(loop_label)
         self.code_lines.append(f"{loop_end_label}:")
         self._set_current_block(loop_end_label)
-
-
         for if_id_key in list(self.last_block_before_endif.keys()):
             self.last_block_before_endif[if_id_key] = loop_end_label
+
+    def _emit_do_loop(self, stmt: DoLoop):
+        start_val, _ = self._emit_expression(stmt.start)
+        end_val, _ = self._emit_expression(stmt.end)
+        step_val, _ = self._emit_expression(stmt.step if stmt.step is not None else IntegerLiteral(value=1))
+        assume_positive_step = stmt.step is None or (isinstance(stmt.step, IntegerLiteral) and stmt.step.value > 0)
+        self._emit_do_loop_with_bounds(stmt, start_val, end_val, step_val, assume_positive_step=assume_positive_step)
 
     def _emit_do_while(self, stmt: DoWhile):
         loop_id = self._new_block_id()

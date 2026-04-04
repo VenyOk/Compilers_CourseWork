@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+import os
+from copy import deepcopy
 from dataclasses import replace as dcReplace
 from typing import Dict, List, Optional
 
@@ -18,7 +20,18 @@ from src.core import (
     Variable,
 )
 from src.optimizations.base import ASTOptimizationPass
-from src.optimizations.loop_analysis import LoopNest, buildNest, constantInt, estimateTripCount, shouldTileNest
+from src.optimizations.loop_analysis import (
+    LoopNest,
+    buildNest,
+    chooseIntraTileLoopOrder,
+    constantInt,
+    countArrayAccesses,
+    effectiveStateCarriedPrefixDepth,
+    estimateTripCount,
+    isStencilLikeNest,
+    stencilFamily,
+    shouldTileNest,
+)
 
 
 def tileVarName(var: str) -> str:
@@ -31,8 +44,22 @@ def isTileVar(var: str) -> bool:
 
 def optimalTileSize(depth: int, l1Bytes: int = 32 * 1024, elemSize: int = 8) -> int:
     nElems = max(l1Bytes // elemSize, 16)
-    size = int(round(nElems ** (1.0 / max(depth, 1))))
+    d = max(depth, 2)
+    size = int(round(nElems ** (1.0 / d))) - 2
     return max(size, 2)
+
+
+def tileSizesFromEnv() -> Optional[List[int]]:
+    raw = os.environ.get("FORTRAN_TILE_SIZES", "").strip()
+    if not raw:
+        return None
+    try:
+        values = [int(part.strip()) for part in raw.split(",") if part.strip()]
+    except Exception:
+        return None
+    if not values:
+        return None
+    return [max(value, 1) for value in values]
 
 
 def intExpr(value: int, line: int, col: int) -> IntegerLiteral:
@@ -91,7 +118,10 @@ def maxExpr(left: Expression, right: Expression) -> Expression:
 
 def substituteExpr(expr: Expression, substitutions: Dict[str, Expression]) -> Expression:
     if isinstance(expr, Variable) and expr.name in substitutions:
-        return substitutions[expr.name]
+        replacement = deepcopy(substitutions[expr.name])
+        if isinstance(replacement, Variable) and replacement.name == expr.name:
+            return replacement
+        return substituteExpr(replacement, substitutions)
     if isinstance(expr, BinaryOp):
         return dcReplace(
             expr,
@@ -107,11 +137,31 @@ def substituteExpr(expr: Expression, substitutions: Dict[str, Expression]) -> Ex
     return expr
 
 
-def tileSizesForNest(nest: LoopNest, baseTileSize: Optional[int], l1Bytes: int) -> List[int]:
+def tileSizesForNest(nest: LoopNest, baseTileSize: Optional[int], l1Bytes: int, override: Optional[List[int]] = None) -> List[int]:
+    if override:
+        result = list(override[:nest.depth])
+        while len(result) < nest.depth:
+            result.append(result[-1])
+        return result
     side = baseTileSize if baseTileSize is not None else optimalTileSize(nest.depth, l1Bytes=l1Bytes)
     trip_counts = [estimateTripCount(loop_info) for loop_info in nest.loops]
     known_counts = [count for count in trip_counts if count is not None and count > 0]
     reference = max(known_counts) if known_counts else None
+    prefix_depth = effectiveStateCarriedPrefixDepth(nest)
+    stencil_like = isStencilLikeNest(nest)
+    access_count = countArrayAccesses(nest)
+    family = stencilFamily(nest)
+
+    def chooseCandidate(count: Optional[int], candidates: List[int], fallback: int) -> int:
+        effective = count if count is not None else reference
+        if effective is None:
+            return max(fallback, 2)
+        if effective <= fallback:
+            return max(2, effective)
+        for candidate in candidates:
+            if candidate < effective and effective // candidate >= 1:
+                return candidate
+        return max(2, min(fallback, effective))
 
     def chooseAxis(count: Optional[int]) -> int:
         effective = count if count is not None else reference
@@ -123,6 +173,51 @@ def tileSizesForNest(nest: LoopNest, baseTileSize: Optional[int], l1Bytes: int) 
             if candidate <= side and candidate < effective and effective // candidate >= 2:
                 return candidate
         return max(2, min(side, effective))
+
+    if family in {"dirichlet_gs", "coefficient_stencil"} and prefix_depth > 0:
+        sizes = []
+        for index, count in enumerate(trip_counts):
+            if index < prefix_depth:
+                sizes.append(chooseCandidate(count, [64, 48, 40, 32, 24, 16, 8], 32))
+            else:
+                sizes.append(chooseCandidate(count, [50, 64, 40, 32, 25, 20, 16, 12, 8], 32))
+        return sizes
+
+    if family == "gauss_seidel":
+        sizes = []
+        for index, count in enumerate(trip_counts):
+            if index < prefix_depth:
+                sizes.append(chooseCandidate(count, [48, 64, 32, 24, 16, 8], 32))
+            else:
+                sizes.append(chooseCandidate(count, [40, 50, 64, 32, 25, 20, 16, 12, 8], 32))
+        return sizes
+
+    if family == "dirichlet_gs":
+        sizes = []
+        for index, count in enumerate(trip_counts):
+            if index < prefix_depth:
+                sizes.append(chooseCandidate(count, [24, 16, 12, 8, 4], 16))
+            else:
+                sizes.append(chooseCandidate(count, [32, 24, 20, 16, 12, 8], 24))
+        return sizes
+
+    if family == "gauss_seidel":
+        sizes = []
+        for index, count in enumerate(trip_counts):
+            if index < prefix_depth:
+                sizes.append(chooseCandidate(count, [24, 16, 12, 8, 4], 16))
+            else:
+                sizes.append(chooseCandidate(count, [24, 20, 16, 12, 8], 16))
+        return sizes
+
+    if stencil_like and prefix_depth > 0 and access_count >= 5:
+        sizes: List[int] = []
+        for index, count in enumerate(trip_counts):
+            if index < prefix_depth:
+                sizes.append(chooseCandidate(count, [64, 48, 40, 32, 24, 16, 8], 32))
+            else:
+                sizes.append(chooseCandidate(count, [50, 64, 40, 32, 25, 20, 16, 12, 8], 32))
+        return sizes
 
     return [chooseAxis(count) for count in trip_counts]
 
@@ -163,7 +258,8 @@ def tileAffineNest(nest: LoopNest, tileSizes: List[int]) -> Optional[Statement]:
     line = nest.loops[0].node.line
     col = nest.loops[0].node.col
     body = nest.body
-    for loop_info, point_info in zip(reversed(nest.loops), reversed(point_infos)):
+    ordered_points = [(nest.loops[index], point_infos[index]) for index in range(nest.depth)]
+    for loop_info, point_info in reversed(ordered_points):
         _, point_start, point_end, point_step = point_info
         body = [DoLoop(
             var=loop_info.var,
@@ -189,28 +285,46 @@ def tileAffineNest(nest: LoopNest, tileSizes: List[int]) -> Optional[Statement]:
     return body[0]
 
 
-def tryTile(loop: Statement, baseTileSize: Optional[int], minDepth: int, l1Bytes: int, counter: List[int]) -> Statement:
+def tileDiagnostic(nest: LoopNest, tile_sizes: List[int]) -> Dict[str, object]:
+    return {
+        "vars": list(nest.vars),
+        "family": stencilFamily(nest),
+        "tile_sizes": list(tile_sizes),
+        "point_order": list(nest.vars),
+        "state_prefix_depth": effectiveStateCarriedPrefixDepth(nest),
+        "accesses": countArrayAccesses(nest),
+    }
+
+
+def tryTile(loop: Statement, baseTileSize: Optional[int], minDepth: int, l1Bytes: int, counter: List[int], diagnostics: List[Dict[str, object]]) -> Statement:
     if not isinstance(loop, (DoLoop, LabeledDoLoop)):
         return loop
     nest = buildNest(loop)
     if any(isTileVar(var) for var in nest.vars):
-        return dcReplace(loop, body=[tryTile(stmt, baseTileSize, minDepth, l1Bytes, counter) for stmt in loop.body])
-    tile_probe = baseTileSize if baseTileSize is not None else optimalTileSize(max(nest.depth, 1), l1Bytes=l1Bytes)
-    if not shouldTileNest(nest, tile_probe, minDepth):
-        return dcReplace(loop, body=[tryTile(stmt, baseTileSize, minDepth, l1Bytes, counter) for stmt in loop.body])
-    tile_sizes = tileSizesForNest(nest, baseTileSize, l1Bytes)
+        return dcReplace(loop, body=[tryTile(stmt, baseTileSize, minDepth, l1Bytes, counter, diagnostics) for stmt in loop.body])
+    override = tileSizesFromEnv()
+    tile_probe = override[0] if override else (baseTileSize if baseTileSize is not None else optimalTileSize(max(nest.depth, 1), l1Bytes=l1Bytes))
+    should_tile = shouldTileNest(nest, tile_probe, minDepth)
+    family = stencilFamily(nest)
+    article_like_skewed_stencil = family in {"dirichlet_gs", "coefficient_stencil"} and any(var.startswith("skew_") for var in nest.vars)
+    if not should_tile and (article_like_skewed_stencil or family == "gauss_seidel") and nest.depth >= minDepth and isStencilLikeNest(nest) and countArrayAccesses(nest) >= 5:
+        should_tile = True
+    if not should_tile:
+        return dcReplace(loop, body=[tryTile(stmt, baseTileSize, minDepth, l1Bytes, counter, diagnostics) for stmt in loop.body])
+    tile_sizes = tileSizesForNest(nest, baseTileSize, l1Bytes, override=override)
     transformed = tileAffineNest(nest, tile_sizes)
     if transformed is not None:
         counter[0] += 1
+        diagnostics.append(tileDiagnostic(nest, tile_sizes))
         return transformed
-    return dcReplace(loop, body=[tryTile(stmt, baseTileSize, minDepth, l1Bytes, counter) for stmt in loop.body])
+    return dcReplace(loop, body=[tryTile(stmt, baseTileSize, minDepth, l1Bytes, counter, diagnostics) for stmt in loop.body])
 
 
-def processStmts(stmts: List[Statement], baseTileSize: Optional[int], minDepth: int, l1Bytes: int, counter: List[int]) -> List[Statement]:
+def processStmts(stmts: List[Statement], baseTileSize: Optional[int], minDepth: int, l1Bytes: int, counter: List[int], diagnostics: List[Dict[str, object]]) -> List[Statement]:
     result = []
     for stmt in stmts:
         if isinstance(stmt, (DoLoop, LabeledDoLoop)):
-            result.append(tryTile(stmt, baseTileSize, minDepth, l1Bytes, counter))
+            result.append(tryTile(stmt, baseTileSize, minDepth, l1Bytes, counter, diagnostics))
         else:
             result.append(stmt)
     return result
@@ -227,18 +341,21 @@ class LoopTiling(ASTOptimizationPass):
 
     def run(self, program: Program) -> Program:
         counter = [0]
-        new_statements = processStmts(program.statements, self.baseTileSize, self.minDepth, self.l1Bytes, counter)
+        diagnostics: List[Dict[str, object]] = []
+        new_statements = processStmts(program.statements, self.baseTileSize, self.minDepth, self.l1Bytes, counter, diagnostics)
         new_subroutines = [
-            dcReplace(subroutine, statements=processStmts(subroutine.statements, self.baseTileSize, self.minDepth, self.l1Bytes, counter))
+            dcReplace(subroutine, statements=processStmts(subroutine.statements, self.baseTileSize, self.minDepth, self.l1Bytes, counter, diagnostics))
             for subroutine in program.subroutines
         ]
         new_functions = [
-            dcReplace(function, statements=processStmts(function.statements, self.baseTileSize, self.minDepth, self.l1Bytes, counter))
+            dcReplace(function, statements=processStmts(function.statements, self.baseTileSize, self.minDepth, self.l1Bytes, counter, diagnostics))
             for function in program.functions
         ]
         self.stats = {
             "tiled": counter[0],
             "tile_size": self.baseTileSize if self.baseTileSize is not None else optimalTileSize(2, l1Bytes=self.l1Bytes),
+            "tile_override": ",".join(str(x) for x in tileSizesFromEnv()) if tileSizesFromEnv() else "",
+            "diagnostics": diagnostics,
         }
         return dcReplace(
             program,

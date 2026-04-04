@@ -57,4 +57,15 @@ htmlcov/
 *.bc
 *.s
 
+# Binaries
+*.exe
+*.pdb
+
+# Claude worktrees and internal dirs
+.claude/
+
+# LLVM/Clang installation
+LLVM/
+llvm/
+
 claude.md

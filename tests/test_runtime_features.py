@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -74,6 +75,35 @@ def run_llvm_ir(ir_code: str, timeout: int = 20) -> str:
         return result.stdout
 
 
+def find_clang() -> str | None:
+    candidates = [
+        os.environ.get("CLANG"),
+        shutil.which("clang"),
+        r"C:\Program Files\LLVM\bin\clang.exe",
+    ]
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def find_openmp_runtime_dir(clang_path: str | None) -> str | None:
+    explicit = os.environ.get("OPENMP_RUNTIME")
+    if explicit and os.path.exists(explicit):
+        return str(Path(explicit).resolve().parent)
+    candidates = []
+    if clang_path:
+        candidates.append(str(Path(clang_path).resolve().parent))
+    candidates.extend([
+        str(ROOT / ".llvm" / "clang+llvm-22.1.2-x86_64-pc-windows-msvc" / "bin"),
+        r"C:\Program Files\LLVM\bin",
+    ])
+    for candidate in candidates:
+        if os.path.exists(os.path.join(candidate, "libomp.dll")) or os.path.exists(os.path.join(candidate, "libiomp5md.dll")):
+            return candidate
+    return None
+
+
 class TestRuntimeFeatures(unittest.TestCase):
     def test_parameter_based_lower_bounds_runtime(self):
         source = """      PROGRAM LOWBND
@@ -144,10 +174,13 @@ class TestRuntimeFeatures(unittest.TestCase):
               S = S + A(I,J)
           END DO
       END DO
-      PRINT *, S
-      END"""
+        PRINT *, S
+        END"""
         llvm_code = compile_to_llvm_optimized(source, level=3)
-        self.assertIn("@fortran_parallel_for_i32", llvm_code)
+        self.assertIn("@__kmpc_fork_call", llvm_code)
+        self.assertIn("@__kmpc_for_static_init_4", llvm_code)
+        self.assertIn("@__kmpc_for_static_fini", llvm_code)
+        self.assertNotIn("@fortran_parallel_for_i32", llvm_code)
         output = run_llvm_ir(llvm_code)
         self.assertEqual(output.strip(), "16842752")
 
@@ -175,7 +208,6 @@ class TestRuntimeFeatures(unittest.TestCase):
       END"""
         llvm_base = compile_to_llvm(source)
         llvm_opt = compile_to_llvm_optimized(source, level=3)
-        self.assertIn("@fortran_parallel_for_i32", llvm_opt)
         base_output = run_llvm_ir(llvm_base)
         opt_output = run_llvm_ir(llvm_opt)
         self.assertEqual(opt_output.strip(), base_output.strip())
@@ -193,6 +225,53 @@ class TestRuntimeFeatures(unittest.TestCase):
         base_output = run_llvm_ir(llvm_base)
         opt_output = run_llvm_ir(llvm_opt)
         self.assertEqual(opt_output.strip(), base_output.strip())
+
+    def test_parallel_ir_runs_via_native_clang_smoke(self):
+        clang = find_clang()
+        if not clang or os.name != "nt":
+            self.skipTest("native clang smoke is only enabled on Windows with clang installed")
+        openmp_dir = find_openmp_runtime_dir(clang)
+        if not openmp_dir:
+            self.skipTest("OpenMP runtime was not found for native clang smoke")
+        source = """      PROGRAM PCLANG
+      INTEGER I, J, S
+      INTEGER A(128,128)
+      DO I = 1, 128
+          DO J = 1, 128
+              A(I,J) = I + J
+          END DO
+      END DO
+      S = 0
+      DO I = 1, 128
+          DO J = 1, 128
+              S = S + A(I,J)
+          END DO
+      END DO
+      PRINT *, S
+      END"""
+        llvm_code = compile_to_llvm_optimized(source, level=3)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ll_path = Path(tmpdir) / "native_parallel.ll"
+            exe_path = Path(tmpdir) / "native_parallel.exe"
+            ll_path.write_text(llvm_code, encoding="utf-8")
+            result = subprocess.run(
+                [clang, "-fopenmp", str(ll_path), "-Wl,/STACK:67108864", "-o", str(exe_path)],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if result.returncode != 0:
+                raise AssertionError(f"clang failed: {result.stderr}")
+            run = subprocess.run(
+                [str(exe_path)],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                env={**os.environ, "OMP_NUM_THREADS": "4", "PATH": openmp_dir + os.pathsep + os.environ.get("PATH", "")},
+            )
+            if run.returncode != 0:
+                raise AssertionError(f"native executable failed: {run.stderr}")
+            self.assertEqual(run.stdout.strip(), "2113536")
 
 
 if __name__ == "__main__":

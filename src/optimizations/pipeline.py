@@ -4,9 +4,11 @@ from src.optimizations.base import ASTOptimizationPass
 from src.optimizations.cse import CommonSubexpressionElimination
 from src.optimizations.licm import LoopInvariantCodeMotion
 from src.optimizations.loop_interchange import LoopInterchange
+from src.optimizations.loop_intra_tile_interchange import IntraTileLoopInterchange
 from src.optimizations.loop_tiling import LoopTiling
 from src.optimizations.loop_skewing import LoopSkewing
 from src.optimizations.loop_wavefront import LoopWavefront
+from src.optimizations.affine_linearization import AffineLinearization
 from src.optimizations.generated_declarations import GeneratedVariableDeclarations
 from src.optimizations.loop_parallelization import LoopParallelization
 
@@ -20,18 +22,20 @@ def buildPasses(level: int) -> List[Type[ASTOptimizationPass]]:
             CommonSubexpressionElimination,
             LoopInterchange,
             LoopTiling,
+            AffineLinearization,
             GeneratedVariableDeclarations,
         ]
     if level == 3:
         return [
-            LoopInvariantCodeMotion,
-            CommonSubexpressionElimination,
-            LoopInterchange,
             LoopSkewing,
             LoopTiling,
+            IntraTileLoopInterchange,
             LoopWavefront,
-            GeneratedVariableDeclarations,
             LoopParallelization,
+            AffineLinearization,
+            LoopInvariantCodeMotion,
+            CommonSubexpressionElimination,
+            GeneratedVariableDeclarations,
         ]
     return []
 
@@ -47,8 +51,13 @@ class OptimizationPipeline:
             if p.name not in self.stats:
                 self.stats[p.name] = {}
             for k, v in p.stats.items():
-                prev = self.stats[p.name].get(k, 0)
-                self.stats[p.name][k] = prev + v
+                prev = self.stats[p.name].get(k)
+                if isinstance(v, (int, float)) and isinstance(prev, (int, float)):
+                    self.stats[p.name][k] = prev + v
+                elif isinstance(v, (int, float)) and prev is None:
+                    self.stats[p.name][k] = v
+                else:
+                    self.stats[p.name][k] = v
 
     def run(self, program):
         self.stats = {}

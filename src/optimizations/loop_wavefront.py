@@ -5,7 +5,7 @@ from typing import Dict, List
 
 from src.core import Assignment, BinaryOp, DoLoop, IfStatement, IntegerLiteral, LabeledDoLoop, Program, Statement, Variable
 from src.optimizations.base import ASTOptimizationPass
-from src.optimizations.loop_analysis import buildNest, constantInt, shouldWavefrontNest
+from src.optimizations.loop_analysis import buildNest, constantInt, stencilFamily, wavefrontDecision
 from src.optimizations.loop_skewing import isSkewVar
 from src.optimizations.loop_tiling import addExpr, intExpr, isTileVar, subExpr, substituteExpr
 
@@ -51,11 +51,9 @@ def isWavefrontCandidate(nest) -> bool:
         return False
     if any(isWavefrontVar(loop_info.var) for loop_info in nest.loops[:depth]):
         return False
-    if not hasSkewedPointLoops(nest, depth):
-        return False
     if not stepsMatch(nest.loops[:depth]):
         return False
-    return shouldWavefrontNest(nest)
+    return wavefrontDecision(nest)[0]
 
 
 def comparison(left, op: str, right, line: int, col: int) -> BinaryOp:
@@ -153,23 +151,30 @@ def wavefrontNest(loop: Statement, counter: List[int]) -> Statement:
     )
 
 
-def tryWavefront(loop: Statement, counter: List[int]) -> Statement:
+def tryWavefront(loop: Statement, counter: List[int], diagnostics: List[Dict[str, object]]) -> Statement:
     if not isinstance(loop, (DoLoop, LabeledDoLoop)):
         return loop
     nest = buildNest(loop)
     if isWavefrontCandidate(nest):
         transformed = wavefrontNest(loop, counter)
         if transformed is not loop:
+            _, reason = wavefrontDecision(nest)
+            diagnostics.append({
+                "vars": list(nest.vars),
+                "family": stencilFamily(nest),
+                "reason": reason,
+                "tile_depth": tileDepth(nest),
+            })
             counter[0] += 1
             return transformed
-    return dcReplace(loop, body=[tryWavefront(stmt, counter) for stmt in loop.body])
+    return dcReplace(loop, body=[tryWavefront(stmt, counter, diagnostics) for stmt in loop.body])
 
 
-def processStmts(stmts: List[Statement], counter: List[int]) -> List[Statement]:
+def processStmts(stmts: List[Statement], counter: List[int], diagnostics: List[Dict[str, object]]) -> List[Statement]:
     result = []
     for stmt in stmts:
         if isinstance(stmt, (DoLoop, LabeledDoLoop)):
-            result.append(tryWavefront(stmt, counter))
+            result.append(tryWavefront(stmt, counter, diagnostics))
         else:
             result.append(stmt)
     return result
@@ -180,16 +185,17 @@ class LoopWavefront(ASTOptimizationPass):
 
     def run(self, program: Program) -> Program:
         counter = [0]
-        new_statements = processStmts(program.statements, counter)
+        diagnostics: List[Dict[str, object]] = []
+        new_statements = processStmts(program.statements, counter, diagnostics)
         new_subroutines = [
-            dcReplace(subroutine, statements=processStmts(subroutine.statements, counter))
+            dcReplace(subroutine, statements=processStmts(subroutine.statements, counter, diagnostics))
             for subroutine in program.subroutines
         ]
         new_functions = [
-            dcReplace(function, statements=processStmts(function.statements, counter))
+            dcReplace(function, statements=processStmts(function.statements, counter, diagnostics))
             for function in program.functions
         ]
-        self.stats = {"wavefronted": counter[0]}
+        self.stats = {"wavefronted": counter[0], "diagnostics": diagnostics}
         return dcReplace(
             program,
             statements=new_statements,

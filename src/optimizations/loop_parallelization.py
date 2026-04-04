@@ -10,9 +10,13 @@ from src.optimizations.loop_analysis import (
     chooseParallelGrain,
     collectPrivatizableScalars,
     collectRegionLoopVars,
+    independentParallelDecision,
     shouldParallelizeIndependentNest,
     shouldParallelizeTiledBand,
     shouldParallelizeWavefrontBand,
+    stencilFamily,
+    tiledParallelDecision,
+    wavefrontParallelDecision,
 )
 
 
@@ -24,7 +28,7 @@ def isTileVar(var: str) -> bool:
     return var.startswith("tile_")
 
 
-def parallelizeStmt(stmt: Statement, counter: List[int], insideWavefront: bool = False) -> Statement:
+def parallelizeStmt(stmt: Statement, counter: List[int], diagnostics: List[dict], insideWavefront: bool = False) -> Statement:
     if isinstance(stmt, ParallelDoLoop):
         return stmt
     if isinstance(stmt, DoLoop):
@@ -32,7 +36,15 @@ def parallelizeStmt(stmt: Statement, counter: List[int], insideWavefront: bool =
         if insideWavefront and isTileVar(stmt.var) and shouldParallelizeWavefrontBand(nest):
             private_base = collectRegionLoopVars(stmt.body) | {stmt.var}
             private_vars = sorted(collectPrivatizableScalars(stmt.body, private_base))
+            _, reason = wavefrontParallelDecision(nest)
             counter[0] += 1
+            diagnostics.append({
+                "var": stmt.var,
+                "strategy": "wavefront",
+                "family": stencilFamily(nest),
+                "grain": chooseParallelGrain(nest),
+                "reason": reason,
+            })
             return ParallelDoLoop(
                 var=stmt.var,
                 start=stmt.start,
@@ -45,12 +57,22 @@ def parallelizeStmt(stmt: Statement, counter: List[int], insideWavefront: bool =
                 grain=chooseParallelGrain(nest),
                 threads_hint=0,
                 strategy="wavefront",
+                backend="openmp",
+                schedule="static",
                 private_vars=private_vars,
             )
         if not insideWavefront and isTileVar(stmt.var) and shouldParallelizeTiledBand(nest):
             private_base = collectRegionLoopVars(stmt.body) | {stmt.var}
             private_vars = sorted(collectPrivatizableScalars(stmt.body, private_base))
+            _, reason = tiledParallelDecision(nest)
             counter[0] += 1
+            diagnostics.append({
+                "var": stmt.var,
+                "strategy": "tiled",
+                "family": stencilFamily(nest),
+                "grain": chooseParallelGrain(nest),
+                "reason": reason,
+            })
             return ParallelDoLoop(
                 var=stmt.var,
                 start=stmt.start,
@@ -63,12 +85,22 @@ def parallelizeStmt(stmt: Statement, counter: List[int], insideWavefront: bool =
                 grain=chooseParallelGrain(nest),
                 threads_hint=0,
                 strategy="tiled",
+                backend="openmp",
+                schedule="static",
                 private_vars=private_vars,
             )
         if not insideWavefront and shouldParallelizeIndependentNest(nest):
             private_base = collectRegionLoopVars(stmt.body) | {stmt.var}
             private_vars = sorted(collectPrivatizableScalars(stmt.body, private_base))
+            _, reason = independentParallelDecision(nest)
             counter[0] += 1
+            diagnostics.append({
+                "var": stmt.var,
+                "strategy": "independent",
+                "family": stencilFamily(nest),
+                "grain": chooseParallelGrain(nest),
+                "reason": reason,
+            })
             return ParallelDoLoop(
                 var=stmt.var,
                 start=stmt.start,
@@ -81,39 +113,41 @@ def parallelizeStmt(stmt: Statement, counter: List[int], insideWavefront: bool =
                 grain=chooseParallelGrain(nest),
                 threads_hint=0,
                 strategy="independent",
+                backend="openmp",
+                schedule="static",
                 private_vars=private_vars,
             )
         next_inside = insideWavefront or isWavefrontVar(stmt.var)
-        new_body = [parallelizeStmt(inner, counter, next_inside) for inner in stmt.body]
+        new_body = [parallelizeStmt(inner, counter, diagnostics, next_inside) for inner in stmt.body]
         if new_body != stmt.body:
             return dcReplace(stmt, body=new_body)
         return stmt
     if isinstance(stmt, LabeledDoLoop):
         next_inside = insideWavefront or isWavefrontVar(stmt.var)
-        new_body = [parallelizeStmt(inner, counter, next_inside) for inner in stmt.body]
+        new_body = [parallelizeStmt(inner, counter, diagnostics, next_inside) for inner in stmt.body]
         if new_body != stmt.body:
             return dcReplace(stmt, body=new_body)
         return stmt
     if isinstance(stmt, IfStatement):
-        new_then = [parallelizeStmt(inner, counter, insideWavefront) for inner in stmt.then_body]
+        new_then = [parallelizeStmt(inner, counter, diagnostics, insideWavefront) for inner in stmt.then_body]
         new_elif = [
-            (cond, [parallelizeStmt(inner, counter, insideWavefront) for inner in body])
+            (cond, [parallelizeStmt(inner, counter, diagnostics, insideWavefront) for inner in body])
             for cond, body in stmt.elif_parts
         ]
-        new_else = [parallelizeStmt(inner, counter, insideWavefront) for inner in stmt.else_body] if stmt.else_body else stmt.else_body
+        new_else = [parallelizeStmt(inner, counter, diagnostics, insideWavefront) for inner in stmt.else_body] if stmt.else_body else stmt.else_body
         if new_then != stmt.then_body or new_elif != stmt.elif_parts or new_else != stmt.else_body:
             return dcReplace(stmt, then_body=new_then, elif_parts=new_elif, else_body=new_else)
         return stmt
     if isinstance(stmt, SimpleIfStatement):
-        new_stmt = parallelizeStmt(stmt.statement, counter, insideWavefront)
+        new_stmt = parallelizeStmt(stmt.statement, counter, diagnostics, insideWavefront)
         if new_stmt is not stmt.statement:
             return dcReplace(stmt, statement=new_stmt)
         return stmt
     return stmt
 
 
-def processStatements(stmts: List[Statement], counter: List[int]) -> List[Statement]:
-    return [parallelizeStmt(stmt, counter, False) for stmt in stmts]
+def processStatements(stmts: List[Statement], counter: List[int], diagnostics: List[dict]) -> List[Statement]:
+    return [parallelizeStmt(stmt, counter, diagnostics, False) for stmt in stmts]
 
 
 class LoopParallelization(ASTOptimizationPass):
@@ -121,16 +155,17 @@ class LoopParallelization(ASTOptimizationPass):
 
     def run(self, program: Program) -> Program:
         counter = [0]
-        new_statements = processStatements(program.statements, counter)
+        diagnostics: List[dict] = []
+        new_statements = processStatements(program.statements, counter, diagnostics)
         new_subroutines = [
-            dcReplace(subroutine, statements=processStatements(subroutine.statements, counter))
+            dcReplace(subroutine, statements=processStatements(subroutine.statements, counter, diagnostics))
             for subroutine in program.subroutines
         ]
         new_functions = [
-            dcReplace(function, statements=processStatements(function.statements, counter))
+            dcReplace(function, statements=processStatements(function.statements, counter, diagnostics))
             for function in program.functions
         ]
-        self.stats = {"parallelized": counter[0]}
+        self.stats = {"parallelized": counter[0], "diagnostics": diagnostics}
         return dcReplace(
             program,
             statements=new_statements,

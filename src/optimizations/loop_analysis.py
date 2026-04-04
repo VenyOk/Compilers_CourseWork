@@ -73,6 +73,10 @@ class ArrayAccess:
     order: int
 
 
+def articleModeEnabled() -> bool:
+    return True
+
+
 @dataclass
 class DependenceVector:
     distances: List[Optional[int]]
@@ -80,6 +84,7 @@ class DependenceVector:
     sink: ArrayAccess
     carrier: Optional[int] = field(init=False)
     is_loop_independent: bool = field(init=False)
+    carriers: List[int] = field(init=False)
 
     def __post_init__(self):
         self.carrier = None
@@ -90,6 +95,16 @@ class DependenceVector:
         self.is_loop_independent = self.carrier is None and all(
             distance == 0 for distance in self.distances if distance is not None
         )
+        last_negative = None
+        for index, distance in enumerate(self.distances):
+            if distance is not None and distance < 0:
+                last_negative = index
+        if last_negative is not None:
+            self.carriers = list(range(last_negative))
+        elif self.carrier is not None:
+            self.carriers = [self.carrier]
+        else:
+            self.carriers = []
 
     def hasNegative(self) -> bool:
         return any(distance is not None and distance < 0 for distance in self.distances)
@@ -511,8 +526,6 @@ def computeDependenceVectors(nest: LoopNest) -> List[DependenceVector]:
                 source=source,
                 sink=sink,
             )
-            if dep.hasNegative():
-                continue
             key = (
                 source.array_name.upper(),
                 tuple(distances),
@@ -523,6 +536,31 @@ def computeDependenceVectors(nest: LoopNest) -> List[DependenceVector]:
                 continue
             seen.add(key)
             dependencies.append(dep)
+    prefix_depth = stateCarriedPrefixDepth(nest)
+    if prefix_depth == 1:
+        self_arrays = selfDependentArrays(nest)
+        extra_dependencies: List[DependenceVector] = []
+        for dep in dependencies:
+            if dep.source.array_name.upper() not in self_arrays:
+                continue
+            temporal_distances = list(dep.distances)
+            temporal_distances[0] = 1
+            temporal_dep = DependenceVector(
+                distances=temporal_distances,
+                source=dep.source,
+                sink=dep.sink,
+            )
+            key = (
+                dep.source.array_name.upper(),
+                tuple(temporal_distances),
+                temporal_dep.carrier if temporal_dep.carrier is not None else -1,
+                dep.sink.is_write,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            extra_dependencies.append(temporal_dep)
+        dependencies.extend(extra_dependencies)
     return dependencies
 
 
@@ -588,13 +626,50 @@ def hasArrayAccesses(nest: LoopNest) -> bool:
     return has_access
 
 
-def activeLoopVars(nest: LoopNest) -> Set[str]:
+def isGeneratedLoopVar(var: str) -> bool:
+    return var.startswith(("tile_", "skew_", "wf_"))
+
+
+def baseActiveLoopVars(nest: LoopNest) -> Set[str]:
     active: Set[str] = set()
     for access in collectAccesses(nest.body, set(nest.vars)):
         for index in access.indices:
             for var, coeff in index.coeffs.items():
                 if coeff != 0:
                     active.add(var)
+    return active
+
+
+def selfDependentArrays(nest: LoopNest) -> Set[str]:
+    accesses = collectAccesses(nest.body, set(nest.vars))
+    read_arrays = {access.array_name.upper() for access in accesses if not access.is_write}
+    write_arrays = {access.array_name.upper() for access in accesses if access.is_write}
+    return read_arrays & write_arrays
+
+
+def stateCarriedPrefixDepth(nest: LoopNest) -> int:
+    if nest.depth != 3:
+        return 0
+    base_active = baseActiveLoopVars(nest)
+    if not base_active:
+        return 0
+    if not selfDependentArrays(nest):
+        return 0
+    depth = 0
+    for loop_info in nest.loops:
+        if isGeneratedLoopVar(loop_info.var):
+            return 0
+        if loop_info.var in base_active:
+            break
+        depth += 1
+    return depth if depth < nest.depth else 0
+
+
+def activeLoopVars(nest: LoopNest) -> Set[str]:
+    active = baseActiveLoopVars(nest)
+    prefix_depth = effectiveStateCarriedPrefixDepth(nest)
+    for loop_info in nest.loops[:prefix_depth]:
+        active.add(loop_info.var)
     return active
 
 
@@ -610,11 +685,197 @@ def localityScore(accesses: List[ArrayAccess], var: str) -> int:
     return score
 
 
+def spatialCarrierDepth(dep: DependenceVector, prefix_depth: int) -> Optional[int]:
+    for index, distance in enumerate(dep.distances[prefix_depth:]):
+        if distance not in (None, 0):
+            return index
+    return None
+
+
+def spatialDependenceBandDepth(nest: LoopNest, prefix_depth: int) -> int:
+    dependencies = computeDependenceVectors(nest)
+    deepest = 0
+    seen = False
+    for dep in dependencies:
+        carrier = spatialCarrierDepth(dep, prefix_depth)
+        if carrier is None:
+            continue
+        deepest = max(deepest, carrier + 1)
+        seen = True
+    return deepest if seen else 1
+
+
+def isStencilLikeNest(nest: LoopNest) -> bool:
+    if not selfDependentArrays(nest):
+        return False
+    accesses = collectAccesses(nest.body, set(nest.vars))
+    if countArrayAccesses(nest) < 4:
+        return False
+    if len({access.array_name.upper() for access in accesses}) > 6:
+        return False
+    if any(not access.indices for access in accesses):
+        return False
+    return True
+
+
+def uniqueArrayCount(nest: LoopNest) -> int:
+    return len({access.array_name.upper() for access in collectAccesses(nest.body, set(nest.vars))})
+
+
+def isCoefficientHeavyStencil(nest: LoopNest) -> bool:
+    return isStencilLikeNest(nest) and uniqueArrayCount(nest) >= 6 and countArrayAccesses(nest) >= 8
+
+
+def isSimpleSingleArrayStencil(nest: LoopNest) -> bool:
+    return isStencilLikeNest(nest) and uniqueArrayCount(nest) == 1
+
+
+def effectiveStateCarriedPrefixDepth(nest: LoopNest) -> int:
+    if nest.depth >= 3 and not isGeneratedLoopVar(nest.loops[0].var):
+        if any(loop_info.var.startswith("skew_") for loop_info in nest.loops[1:]) and selfDependentArrays(nest):
+            return 1
+    base_active = baseActiveLoopVars(nest)
+    if not base_active:
+        return 0
+    if not selfDependentArrays(nest):
+        return 0
+    depth = 0
+    for loop_info in nest.loops:
+        if loop_info.var in base_active:
+            break
+        depth += 1
+    return depth if 0 < depth < nest.depth else 0
+
+
+def stencilFamily(nest: LoopNest) -> str:
+    prefix_depth = effectiveStateCarriedPrefixDepth(nest)
+    if nest.depth >= 3 and not isGeneratedLoopVar(nest.loops[0].var) and any(loop_info.var.startswith("skew_") for loop_info in nest.loops[1:]) and selfDependentArrays(nest):
+        if isCoefficientHeavyStencil(nest):
+            return "dirichlet_gs"
+        if isSimpleSingleArrayStencil(nest):
+            return "gauss_seidel"
+    if isCoefficientHeavyStencil(nest) and prefix_depth > 0:
+        return "dirichlet_gs"
+    if isSimpleSingleArrayStencil(nest) and prefix_depth > 0:
+        return "gauss_seidel"
+    if isCoefficientHeavyStencil(nest):
+        return "coefficient_stencil"
+    if isSimpleSingleArrayStencil(nest):
+        return "single_array_stencil"
+    if isStencilLikeNest(nest):
+        return "stencil"
+    if hasArrayAccesses(nest):
+        return "affine_loop_nest"
+    return "non_array_nest"
+
+
+def stencilReuseScore(nest: LoopNest) -> int:
+    score = 0
+    loop_vars = nest.vars
+    for dep in computeDependenceVectors(nest):
+        if dep.carrier is None:
+            continue
+        tail = dep.distances[stateCarriedPrefixDepth(nest):]
+        for distance in tail:
+            if distance in (None, 0):
+                continue
+            if abs(distance) == 1:
+                score += 2
+            else:
+                score += 1
+    for access in collectAccesses(nest.body, set(loop_vars)):
+        if access.is_write:
+            score += 1
+    return score
+
+
+def axisDependenceScore(nest: LoopNest, var: str) -> int:
+    if var not in nest.vars:
+        return 0
+    var_index = nest.vars.index(var)
+    score = 0
+    for dep in computeDependenceVectors(nest):
+        if var_index >= len(dep.distances):
+            continue
+        distance = dep.distances[var_index]
+        if distance in (None, 0):
+            continue
+        if abs(distance) == 1:
+            score += 6
+        else:
+            score += 2
+        if dep.carrier == var_index:
+            score += 4
+    return score
+
+
+def referencedLoopVars(expr: Expression, loop_vars: Set[str]) -> Set[str]:
+    if isinstance(expr, Variable):
+        return {expr.name} if expr.name in loop_vars else set()
+    if isinstance(expr, ArrayRef):
+        result: Set[str] = set()
+        for index in expr.indices:
+            result.update(referencedLoopVars(index, loop_vars))
+        return result
+    if isinstance(expr, BinaryOp):
+        return referencedLoopVars(expr.left, loop_vars) | referencedLoopVars(expr.right, loop_vars)
+    if isinstance(expr, UnaryOp):
+        return referencedLoopVars(expr.operand, loop_vars)
+    if isinstance(expr, FunctionCall):
+        result: Set[str] = set()
+        for arg in expr.args:
+            result.update(referencedLoopVars(arg, loop_vars))
+        return result
+    return set()
+
+
+def chooseIntraTileLoopOrder(nest: LoopNest) -> List[int]:
+    if nest.depth <= 1:
+        return list(range(nest.depth))
+    accesses = collectAccesses(nest.body, set(nest.vars))
+    prefix_depth = effectiveStateCarriedPrefixDepth(nest)
+    suffix = list(range(prefix_depth, nest.depth))
+    if len(suffix) <= 1:
+        return list(range(nest.depth))
+    dependency_map: Dict[int, Set[str]] = {}
+    for index in suffix:
+        deps = referencedLoopVars(nest.loops[index].start, set(nest.vars))
+        deps.update(referencedLoopVars(nest.loops[index].end, set(nest.vars)))
+        deps.discard(nest.loops[index].var)
+        dependency_map[index] = deps
+    scores: Dict[int, int] = {}
+    for index in suffix:
+        var = nest.loops[index].var
+        reuse = axisDependenceScore(nest, var)
+        locality = localityScore(accesses, var)
+        trip_count = estimateTripCount(nest.loops[index]) or 0
+        family = stencilFamily(nest)
+        if family in {"dirichlet_gs", "gauss_seidel", "single_array_stencil", "stencil"}:
+            scores[index] = (reuse * 1000) + (locality * 10) + min(trip_count, 128)
+        else:
+            scores[index] = (locality * 100) + min(trip_count, 128)
+    ordered = list(range(prefix_depth))
+    chosen_vars = {nest.loops[index].var for index in ordered}
+    remaining = list(suffix)
+    while remaining:
+        ready = [index for index in remaining if dependency_map[index].issubset(chosen_vars)]
+        if not ready:
+            return list(range(nest.depth))
+        ready.sort(key=lambda index: scores[index])
+        chosen = ready[0]
+        ordered.append(chosen)
+        chosen_vars.add(nest.loops[chosen].var)
+        remaining.remove(chosen)
+    return ordered
+
+
 def preferInterchange(nest: LoopNest) -> bool:
     if nest.depth < 2 or not isAffineNest(nest):
         return False
     has_access, all_affine = accessStatus(nest.body, set(nest.vars))
     if not has_access or not all_affine:
+        return False
+    if stateCarriedPrefixDepth(nest) > 0:
         return False
     if len(activeLoopVars(nest)) != nest.depth:
         return False
@@ -648,38 +909,34 @@ def canInterchange(nest: LoopNest) -> bool:
     return all(dep.allNonNegative() for dep in dependencies)
 
 
-def shouldTileNest(nest: LoopNest, tile_size: int, min_depth: int) -> bool:
-    if nest.depth < min_depth or not isAffineNest(nest):
-        return False
+def tileDecision(nest: LoopNest, tile_size: int, min_depth: int) -> Tuple[bool, str]:
+    if nest.depth < min_depth:
+        return False, "depth below tiling threshold"
+    if not isAffineNest(nest):
+        return False, "non-affine nest"
     has_access, all_affine = accessStatus(nest.body, set(nest.vars))
     if not has_access or not all_affine:
-        return False
+        return False, "body is not affine-access dominated"
     if len(activeLoopVars(nest)) != nest.depth:
-        return False
-    trip_counts = [estimateTripCount(loop_info) for loop_info in nest.loops[:min(4, nest.depth)]]
-    known = [count for count in trip_counts if count is not None]
-    if known:
-        if max(known) <= 3:
-            return False
-        if len(known) >= 2 and known[0] * known[1] <= 16:
-            return False
-    volume = estimateNestVolume(nest, limit_depth=min(3, nest.depth))
-    if volume is not None and volume <= max(32, tile_size * 2):
-        return False
-    dependencies = computeDependenceVectors(nest)
-    if dependencies and not needsSkewing(nest):
-        deepest = max((dep.carrier for dep in dependencies if dep.carrier is not None), default=0)
-        if deepest >= 2:
-            return False
-    return True
+        return False, "not all loop variables are active in accesses"
+    family = stencilFamily(nest)
+    if isStencilLikeNest(nest):
+        if family == "dirichlet_gs":
+            return True, "iterative coefficient stencil follows article tiling path"
+        if family == "gauss_seidel":
+            return True, "iterative Gauss-Seidel stencil follows article tiling path"
+        return True, "iterative stencil follows article tiling path"
+    return True, "affine iterative nest follows O3 tiling path"
+
+
+def shouldTileNest(nest: LoopNest, tile_size: int, min_depth: int) -> bool:
+    return tileDecision(nest, tile_size, min_depth)[0]
 
 
 def dependenceBandDepth(nest: LoopNest) -> int:
-    dependencies = computeDependenceVectors(nest)
-    deepest = max((dep.carrier for dep in dependencies if dep.carrier is not None), default=None)
-    if deepest is None:
-        return 1
-    return deepest + 1
+    prefix_depth = stateCarriedPrefixDepth(nest)
+    spatial_depth = spatialDependenceBandDepth(nest, prefix_depth)
+    return min(nest.depth, prefix_depth + spatial_depth)
 
 
 def needsSkewing(nest: LoopNest) -> bool:
@@ -690,18 +947,34 @@ def needsSkewing(nest: LoopNest) -> bool:
         return False
     if len(activeLoopVars(nest)) != nest.depth:
         return False
-    dependencies = computeDependenceVectors(nest)
-    return any(dep.carrier is not None and dep.carrier > 0 for dep in dependencies)
+    return dependenceBandDepth(nest) > 1
+
+
+def skewDecision(nest: LoopNest) -> Tuple[bool, str]:
+    if not needsSkewing(nest):
+        return False, "dependence band does not require skewing"
+    family = stencilFamily(nest)
+    if family == "dirichlet_gs":
+        return True, "negative carried dependences require skewing before article tiling"
+    return True, "dependence vectors require article skewing"
+
+
+def shouldSkewNest(nest: LoopNest) -> bool:
+    return skewDecision(nest)[0]
 
 
 def getSkewMatrix(nest: LoopNest) -> List[List[int]]:
     matrix = [[0 for _ in range(nest.depth)] for _ in range(nest.depth)]
     if not needsSkewing(nest):
         return matrix
-    band_depth = min(dependenceBandDepth(nest), nest.depth)
-    for inner_index in range(1, band_depth):
-        for outer_index in range(inner_index):
-            matrix[inner_index][outer_index] = 1
+    for dep in computeDependenceVectors(nest):
+        for inner_index, distance in enumerate(dep.distances):
+            if distance is None or distance >= 0:
+                continue
+            for outer_index in dep.carriers:
+                if outer_index >= inner_index:
+                    continue
+                matrix[inner_index][outer_index] = max(matrix[inner_index][outer_index], abs(distance))
     return matrix
 
 
@@ -736,6 +1009,11 @@ def prefixLoopDepth(nest: LoopNest, prefix: str) -> int:
         else:
             break
     return depth
+
+
+def pointSkewDepth(nest: LoopNest) -> int:
+    tile_depth = prefixLoopDepth(nest, "tile_")
+    return sum(1 for loop_info in nest.loops[tile_depth:] if loop_info.var.startswith("skew_"))
 
 
 def estimatePrefixVolume(nest: LoopNest, depth: int) -> Optional[int]:
@@ -980,48 +1258,56 @@ def isSafeParallelBody(stmts: List[Statement], private_vars: Set[str]) -> bool:
 
 
 def shouldWavefrontNest(nest: LoopNest) -> bool:
+    return wavefrontDecision(nest)[0]
+
+
+def wavefrontDecision(nest: LoopNest) -> Tuple[bool, str]:
     tile_depth = prefixLoopDepth(nest, "tile_")
     if tile_depth < 2:
-        return False
+        return False, "tile band is too small for hyperplane traversal"
     if not hasArrayAccesses(nest):
-        return False
+        return False, "no array accesses in transformed band"
     if countArrayAccesses(nest) < 2:
-        return False
-    if tile_depth == 2 and countArrayAccesses(nest) < 6:
-        return False
-    band_volume = estimatePrefixVolume(nest, tile_depth)
-    if band_volume is not None and band_volume < 2:
-        return False
-    tile_footprint = estimateTileFootprint(nest)
-    if tile_footprint is not None and tile_footprint < 4:
-        return False
-    working_set = estimateTransformedWorkingSet(nest)
-    if working_set is not None and working_set < 64:
-        return False
-    return True
+        return False, "too few accesses for wavefront traversal"
+    has_skewed_points = any(loop_info.var.startswith("skew_") for loop_info in nest.loops[tile_depth:])
+    if has_skewed_points:
+        return True, "skewed tiled band follows article hyperplane traversal"
+    if isSimpleSingleArrayStencil(nest):
+        return True, "single-array stencil follows hyperplane traversal"
+    return False, "wavefront is reserved for skewed iterative bands or single-array stencils"
 
 
 def shouldParallelizeIndependentNest(nest: LoopNest) -> bool:
+    return independentParallelDecision(nest)[0]
+
+
+def independentParallelDecision(nest: LoopNest) -> Tuple[bool, str]:
     if nest.depth == 0 or not isAffineNest(nest):
-        return False
+        return False, "non-affine nest"
     if not hasArrayAccesses(nest):
-        return False
+        return False, "no array accesses"
+    if effectiveStateCarriedPrefixDepth(nest) > 0 and selfDependentArrays(nest):
+        return False, "state-carrying outer prefix stays sequential"
     if nest.loops[0].var not in activeLoopVars(nest):
-        return False
+        return False, "outer loop does not carry useful parallel work"
     dependencies = computeDependenceVectors(nest)
     if any(dep.carrier == 0 for dep in dependencies):
-        return False
+        return False, "outer loop carries a dependence"
     outer_trip = estimateTripCount(nest.loops[0])
     if outer_trip is not None and outer_trip < 4:
-        return False
+        return False, "outer trip count is too small"
     volume = estimateNestVolume(nest, limit_depth=min(3, nest.depth))
     if volume is not None and volume < 8192:
-        return False
+        return False, "nest volume is too small"
+    if countArrayAccesses(nest) <= 2 and volume is not None and volume < 24576:
+        return False, "fill-like loop is too small for parallel launch"
     working_set = estimateWorkingSet(nest)
     if working_set is not None and working_set < 8 * 1024:
-        return False
+        return False, "working set is too small"
     private_vars = collectRegionLoopVars(nest.body) | {nest.loops[0].var}
-    return isSafeParallelBody(nest.body, private_vars)
+    if not isSafeParallelBody(nest.body, private_vars):
+        return False, "body contains unsupported control or unsafe scalar writes"
+    return True, "independent loop band is profitable for parallel execution"
 
 
 def chooseParallelGrain(nest: LoopNest) -> int:
@@ -1038,6 +1324,8 @@ def chooseParallelGrain(nest: LoopNest) -> int:
             work_per_iter = max(32, countArrayAccesses(nest) * 8)
         else:
             work_per_iter = max(1, volume // max(outer_trip, 1))
+    if tile_depth >= 3 and countArrayAccesses(nest) >= 5:
+        work_per_iter = max(work_per_iter, 1024)
     if work_per_iter >= 4096:
         return 1
     if work_per_iter >= 1024:
@@ -1050,46 +1338,55 @@ def chooseParallelGrain(nest: LoopNest) -> int:
 
 
 def shouldParallelizeTiledBand(nest: LoopNest) -> bool:
+    return tiledParallelDecision(nest)[0]
+
+
+def tiledParallelDecision(nest: LoopNest) -> Tuple[bool, str]:
     tile_depth = prefixLoopDepth(nest, "tile_")
     if tile_depth == 0:
-        return False
+        return False, "no tile loops to parallelize"
     if not hasArrayAccesses(nest):
-        return False
+        return False, "no array accesses"
     if any(var.startswith("skew_") for var in nest.vars):
-        return False
-    outer_trip = estimateTripCount(nest.loops[0])
-    if outer_trip is not None and outer_trip < 3:
-        return False
-    band_volume = estimatePrefixVolume(nest, tile_depth)
-    if band_volume is not None and band_volume < 16:
-        return False
-    tile_footprint = estimateTileFootprint(nest)
-    if tile_footprint is not None and tile_footprint < 256:
-        return False
-    working_set = estimateTransformedWorkingSet(nest)
-    if working_set is not None and working_set < 8 * 1024:
-        return False
+        return False, "skewed point loops use wavefront-specific parallel path"
     private_vars = collectRegionLoopVars(nest.body) | {nest.loops[0].var}
-    return isSafeParallelBody(nest.body, private_vars)
+    if not isSafeParallelBody(nest.body, private_vars):
+        return False, "body contains unsupported control or unsafe scalar writes"
+    return True, "tiled band follows static OpenMP execution"
 
 
 def shouldParallelizeWavefrontBand(nest: LoopNest) -> bool:
+    return wavefrontParallelDecision(nest)[0]
+
+
+def wavefrontParallelDecision(nest: LoopNest) -> Tuple[bool, str]:
     if nest.depth == 0:
-        return False
-    outer_trip = estimateTripCount(nest.loops[0])
-    if outer_trip is not None and outer_trip < 2:
-        return False
+        return False, "empty nest"
     tile_depth = prefixLoopDepth(nest, "tile_")
-    band_volume = estimatePrefixVolume(nest, tile_depth if tile_depth > 0 else min(2, nest.depth))
-    if band_volume is not None and band_volume < 4:
-        return False
-    tile_footprint = estimateTileFootprint(nest)
-    if tile_footprint is not None and tile_footprint < 128:
-        return False
-    working_set = estimateTransformedWorkingSet(nest)
-    if countArrayAccesses(nest) < 6:
-        return False
-    if working_set is not None and (tile_footprint is not None or tile_depth > 1) and working_set < 4 * 1024:
-        return False
     private_vars = collectRegionLoopVars(nest.body) | {nest.loops[0].var}
-    return isSafeParallelBody(nest.body, private_vars)
+    if not isSafeParallelBody(nest.body, private_vars):
+        return False, "body contains unsupported control or unsafe scalar writes"
+    if stencilFamily(nest) == "dirichlet_gs":
+        return True, "article wavefront exposes tile-level parallelism"
+    if tile_depth == 0:
+        return False, "no tile loops inside wavefront band"
+    return True, "wavefront band follows static OpenMP execution"
+
+
+def describeNest(nest: LoopNest, tile_size: int = 32, min_depth: int = 2) -> Dict[str, object]:
+    tile_ok, tile_reason = tileDecision(nest, tile_size, min_depth)
+    skew_ok, skew_reason = skewDecision(nest)
+    return {
+        "vars": list(nest.vars),
+        "depth": nest.depth,
+        "family": stencilFamily(nest),
+        "trip_counts": [estimateTripCount(loop_info) for loop_info in nest.loops],
+        "accesses": countArrayAccesses(nest),
+        "unique_arrays": uniqueArrayCount(nest),
+        "working_set": estimateWorkingSet(nest),
+        "state_prefix_depth": effectiveStateCarriedPrefixDepth(nest),
+        "reuse_score": stencilReuseScore(nest) if isStencilLikeNest(nest) else 0,
+        "skew": {"apply": skew_ok, "reason": skew_reason, "matrix": getSkewMatrix(nest)},
+        "tile": {"apply": tile_ok, "reason": tile_reason},
+        "point_order": [nest.loops[index].var for index in chooseIntraTileLoopOrder(nest)],
+    }

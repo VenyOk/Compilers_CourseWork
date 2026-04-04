@@ -27,7 +27,7 @@ from src.core import (
     WriteStatement,
 )
 from src.optimizations.base import ASTOptimizationPass
-from src.optimizations.loop_analysis import buildNest, getSkewMatrix, needsSkewing
+from src.optimizations.loop_analysis import buildNest, getSkewMatrix, skewDecision, stencilFamily
 
 
 def skewVarName(var: str) -> str:
@@ -66,7 +66,10 @@ def mulExprByInt(expr: Expression, factor: int, line: int, col: int) -> Expressi
 
 def substituteExpr(expr: Expression, substitutions: Dict[str, Expression]) -> Expression:
     if isinstance(expr, Variable) and expr.name in substitutions:
-        return deepcopy(substitutions[expr.name])
+        replacement = deepcopy(substitutions[expr.name])
+        if isinstance(replacement, Variable) and replacement.name == expr.name:
+            return replacement
+        return substituteExpr(replacement, substitutions)
     if isinstance(expr, BinaryOp):
         return dcReplace(
             expr,
@@ -200,25 +203,32 @@ def skewNest(nest, matrix: List[List[int]]) -> Statement:
     return nested_body[0]
 
 
-def trySkew(loop: Statement, counter: List[int]) -> Statement:
+def trySkew(loop: Statement, counter: List[int], diagnostics: List[Dict[str, object]]) -> Statement:
     if not isinstance(loop, (DoLoop, LabeledDoLoop)):
         return loop
     nest = buildNest(loop)
     if any(isSkewVar(var) for var in nest.vars):
-        return dcReplace(loop, body=[trySkew(stmt, counter) for stmt in loop.body])
-    if nest.depth >= 2 and needsSkewing(nest):
+        return dcReplace(loop, body=[trySkew(stmt, counter, diagnostics) for stmt in loop.body])
+    should_skew, reason = skewDecision(nest)
+    if nest.depth >= 2 and should_skew:
         matrix = getSkewMatrix(nest)
         if any(any(row) for row in matrix):
             counter[0] += 1
+            diagnostics.append({
+                "vars": list(nest.vars),
+                "family": stencilFamily(nest),
+                "reason": reason,
+                "matrix": matrix,
+            })
             return skewNest(nest, matrix)
-    return dcReplace(loop, body=[trySkew(stmt, counter) for stmt in loop.body])
+    return dcReplace(loop, body=[trySkew(stmt, counter, diagnostics) for stmt in loop.body])
 
 
-def processStmts(stmts: List[Statement], counter: List[int]) -> List[Statement]:
+def processStmts(stmts: List[Statement], counter: List[int], diagnostics: List[Dict[str, object]]) -> List[Statement]:
     result = []
     for stmt in stmts:
         if isinstance(stmt, (DoLoop, LabeledDoLoop)):
-            result.append(trySkew(stmt, counter))
+            result.append(trySkew(stmt, counter, diagnostics))
         else:
             result.append(stmt)
     return result
@@ -229,16 +239,17 @@ class LoopSkewing(ASTOptimizationPass):
 
     def run(self, program: Program) -> Program:
         counter = [0]
-        new_statements = processStmts(program.statements, counter)
+        diagnostics: List[Dict[str, object]] = []
+        new_statements = processStmts(program.statements, counter, diagnostics)
         new_subroutines = [
-            dcReplace(subroutine, statements=processStmts(subroutine.statements, counter))
+            dcReplace(subroutine, statements=processStmts(subroutine.statements, counter, diagnostics))
             for subroutine in program.subroutines
         ]
         new_functions = [
-            dcReplace(function, statements=processStmts(function.statements, counter))
+            dcReplace(function, statements=processStmts(function.statements, counter, diagnostics))
             for function in program.functions
         ]
-        self.stats = {"skewed": counter[0]}
+        self.stats = {"skewed": counter[0], "diagnostics": diagnostics}
         return dcReplace(
             program,
             statements=new_statements,

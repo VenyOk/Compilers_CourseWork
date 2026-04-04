@@ -726,6 +726,8 @@ class ParallelDoLoop(DoLoop):
     grain: int = 1
     threads_hint: int = 0
     strategy: str = ""
+    backend: str = ""
+    schedule: str = ""
     private_vars: List[str] = field(default_factory=list)
 
     def __str__(self):
@@ -2293,6 +2295,10 @@ def pretty_print_ast(node: ASTNode, indent: int = 0) -> str:
         result = f"{prefix}PARALLEL DO LOOP:\n"
         result += f"{prefix}  variable: {node.var}\n"
         result += f"{prefix}  grain: {node.grain}\n"
+        if node.backend:
+            result += f"{prefix}  backend: {node.backend}\n"
+        if node.schedule:
+            result += f"{prefix}  schedule: {node.schedule}\n"
         result += f"{prefix}  start: {pretty_print_ast(node.start, indent + 1)}"
         result += f"{prefix}  end: {pretty_print_ast(node.end, indent + 1)}"
         if node.step:

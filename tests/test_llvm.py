@@ -238,7 +238,7 @@ class TestLLVMArrays(unittest.TestCase):
         self.assertIn("@COMMON_BLK_A = global [6 x i32] zeroinitializer", llvm_code)
         self.assertIn("br label %loop_end_", llvm_code)
 
-    def test_parallel_runtime_helper_is_declared(self):
+    def test_parallel_runtime_abi_is_declared(self):
         code = """PROGRAM PARLLP
         IMPLICIT NONE
         INTEGER I, J
@@ -250,7 +250,11 @@ class TestLLVMArrays(unittest.TestCase):
         ENDDO
         END"""
         llvm_code = compile_code_llvm(code)
-        self.assertIn("declare void @fortran_parallel_for_i32", llvm_code)
+        self.assertIn("declare i32 @__kmpc_global_thread_num", llvm_code)
+        self.assertIn("declare void @__kmpc_fork_call", llvm_code)
+        self.assertIn("declare void @__kmpc_for_static_init_4", llvm_code)
+        self.assertIn("declare void @__kmpc_for_static_fini", llvm_code)
+        self.assertNotIn("@fortran_parallel_for_i32", llvm_code)
 
 
 class TestLLVMFunctions(unittest.TestCase):
