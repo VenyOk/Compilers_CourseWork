@@ -4,9 +4,10 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.ssa_generator import SSAGenerator
-from src.semantic import SemanticAnalyzer
-from src.core import Lexer, Parser
+from src.ir.ssa import SSAGenerator
+from src.semantic.analyzer import SemanticAnalyzer
+from src.frontend.lexer import Lexer
+from src.frontend.parser import Parser
 
 
 def compile_code_ssa(code: str):

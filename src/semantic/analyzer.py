@@ -1,7 +1,6 @@
 from typing import Dict, Tuple, Optional, List
-from enum import Enum
 from dataclasses import dataclass
-from src.core import (
+from src.frontend.ast import (
     ASTNode, FunctionDef, Program, Declaration, Statement, Assignment,
     DoLoop, LabeledDoLoop, IfStatement, SimpleIfStatement, PrintStatement, ReadStatement, Subroutine, WriteStatement,
     CallStatement, BinaryOp, UnaryOp, Variable, IntegerLiteral,
@@ -11,60 +10,10 @@ from src.core import (
     ReturnStatement, ExternalStatement, CommonStatement,
     GotoStatement, ContinueStatement, StopStatement, ExitStatement
 )
+from src.semantic.types import TypeKind
+from src.semantic.symbols import VariableInfo
+from src.semantic.errors import SemanticError, TypeMismatchError, UndefinedSymbolError, DimensionError, TypeError
 
-class SemanticError(Exception):
-    def __init__(self, message: str, node: Optional[ASTNode] = None,
-                 suggestion: Optional[str] = None):
-        self.message = message
-        self.node = node
-        self.suggestion = suggestion
-        self.line = node.line if node and hasattr(node, 'line') else None
-        self.column = node.col if node and hasattr(node, 'col') else None
-
-    def __str__(self):
-        loc = f"({self.line}:{self.column}) " if self.line else ""
-        sug = f"\n  Подсказка: {self.suggestion}" if self.suggestion else ""
-        return f"{loc}Semantic Error: {self.message}{sug}"
-
-class TypeMismatchError(SemanticError):
-    pass
-
-class UndefinedSymbolError(SemanticError):
-    pass
-
-class DimensionError(SemanticError):
-    pass
-
-class TypeError(SemanticError):
-    pass
-
-class TypeKind(Enum):
-    INTEGER = "INTEGER"
-    REAL = "REAL"
-    LOGICAL = "LOGICAL"
-    CHARACTER = "CHARACTER"
-    COMPLEX = "COMPLEX"
-    UNKNOWN = "UNKNOWN"
-
-@dataclass
-class VariableInfo:
-    name: str
-    type_kind: TypeKind
-    is_array: bool = False
-    dimensions: List[Tuple[int, int]] = None
-    is_parameter: bool = False
-    value: Optional[object] = None
-    explicitly_declared: bool = False
-
-    def __post_init__(self):
-        if self.dimensions is None:
-            self.dimensions = []
-
-    def get_dimension_size(self, dim_index: int) -> int:
-        if dim_index < len(self.dimensions):
-            k, l = self.dimensions[dim_index]
-            return l - k + 1
-        return 0
 
 class SemanticAnalyzer:
     def __init__(self):
@@ -371,23 +320,21 @@ class SemanticAnalyzer:
 
     def analyze_do_loop(self, stmt: DoLoop):
         if stmt.var not in self.symbol_table:
-            error_msg = self.format_error(
+            error = UndefinedSymbolError(
                 f"Переменная цикла '{stmt.var}' не объявлена",
                 node=stmt,
-                context="цикл DO",
                 suggestion=f"Объявите переменную цикла перед использованием (например: INTEGER {stmt.var})"
             )
-            self.errors.append(error_msg)
+            self.errors.append(error)
         else:
             var_info = self.symbol_table[stmt.var]
             if var_info.type_kind != TypeKind.INTEGER:
-                error_msg = self.format_error(
+                error = TypeError(
                     f"Переменная цикла '{stmt.var}' должна быть типа INTEGER",
                     node=stmt,
-                    context=f"объявлена как {var_info.type_kind.value}",
-                    suggestion=f"змените тип переменной '{stmt.var}' на INTEGER"
+                    suggestion=f"Измените тип переменной '{stmt.var}' на INTEGER"
                 )
-                self.errors.append(error_msg)
+                self.errors.append(error)
         start_type = self.infer_expression_type(stmt.start)
         end_type = self.infer_expression_type(stmt.end)
         if start_type != TypeKind.INTEGER:

@@ -4,7 +4,10 @@ import os
 from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.core import Lexer, Parser, TokenType, Program, Declaration, Assignment, DoLoop, IfStatement, PrintStatement, ExternalStatement, CommonStatement, ExitStatement
+from src.frontend.lexer import Lexer
+from src.frontend.parser import Parser
+from src.frontend.lexer import TokenType
+from src.frontend.ast import Program, Declaration, Assignment, DoLoop, IfStatement, PrintStatement, ExternalStatement, CommonStatement, ExitStatement
 
 
 class TestLexer(unittest.TestCase):

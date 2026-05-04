@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import List
 from dataclasses import replace as dcReplace
 
-from src.core import Program, Statement, DoLoop, LabeledDoLoop
+from src.frontend.ast import Program, Statement, DoLoop, LabeledDoLoop
 from src.optimizations.base import ASTOptimizationPass
 from src.optimizations.loop_analysis import canInterchange, buildNest, preferInterchange
 

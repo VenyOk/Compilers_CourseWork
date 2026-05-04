@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import replace as dcReplace
 from typing import List
 
-from src.core import DoLoop, IfStatement, LabeledDoLoop, ParallelDoLoop, Program, SimpleIfStatement, Statement
+from src.frontend.ast import DoLoop, IfStatement, LabeledDoLoop, ParallelDoLoop, Program, SimpleIfStatement, Statement
 from src.optimizations.base import ASTOptimizationPass
 from src.optimizations.loop_analysis import (
     buildNest,

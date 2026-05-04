@@ -13,7 +13,7 @@ class ASTOptimizationPass(ABC):
         ...
 
     def transformExpr(self, expr):
-        from src.core import BinaryOp, UnaryOp, FunctionCall, ArrayRef
+        from src.frontend.ast import BinaryOp, UnaryOp, FunctionCall, ArrayRef
         from dataclasses import replace
         if isinstance(expr, BinaryOp):
             nl = self.transformExpr(expr.left)
@@ -35,7 +35,7 @@ class ASTOptimizationPass(ABC):
         return expr
 
     def transformStmt(self, stmt):
-        from src.core import (
+        from src.frontend.ast import (
             Assignment, DoLoop, LabeledDoLoop, DoWhile, LabeledDoWhile,
             IfStatement, SimpleIfStatement,
         )

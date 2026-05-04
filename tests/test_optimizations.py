@@ -4,9 +4,11 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.core import Lexer, Parser, ParallelDoLoop
-from src.semantic import SemanticAnalyzer
-from src.llvm_generator import LLVMGenerator
+from src.frontend.lexer import Lexer
+from src.frontend.parser import Parser
+from src.frontend.ast import ParallelDoLoop
+from src.semantic.analyzer import SemanticAnalyzer
+from src.ir.llvm import LLVMGenerator
 from src.optimizations.pipeline import OptimizationPipeline
 
 

@@ -1,9 +1,15 @@
 import argparse
 import sys
-from src.core import Lexer, Parser, pretty_print_ast
-from src.semantic import SemanticAnalyzer
-from src.ssa_generator import SSAGenerator
-from src.llvm_generator import LLVMGenerator
+import os
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.frontend.lexer import Lexer
+from src.frontend.parser import Parser
+from src.frontend.ast import pretty_print_ast
+from src.semantic.analyzer import SemanticAnalyzer
+from src.ir.ssa import SSAGenerator
+from src.ir.llvm import LLVMGenerator
 
 def analyze_file(file_path: str, ssa_output: str = None, llvm_output: str = None,
                  show_ast: bool = False, opt_level: int = 0) -> int:

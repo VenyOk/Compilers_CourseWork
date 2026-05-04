@@ -5,7 +5,7 @@ from copy import deepcopy
 from dataclasses import replace as dcReplace
 from typing import Dict, List, Optional
 
-from src.core import (
+from src.frontend.ast import (
     ArrayRef,
     BinaryOp,
     DoLoop,

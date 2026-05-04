@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -75,7 +76,7 @@ def run_llvm_ir(ir_code: str, timeout: int = 20) -> str:
         return result.stdout
 
 
-def find_clang() -> str | None:
+def find_clang() -> Optional[str]:
     candidates = [
         os.environ.get("CLANG"),
         shutil.which("clang"),
@@ -87,7 +88,7 @@ def find_clang() -> str | None:
     return None
 
 
-def find_openmp_runtime_dir(clang_path: str | None) -> str | None:
+def find_openmp_runtime_dir(clang_path: Optional[str]) -> Optional[str]:
     explicit = os.environ.get("OPENMP_RUNTIME")
     if explicit and os.path.exists(explicit):
         return str(Path(explicit).resolve().parent)

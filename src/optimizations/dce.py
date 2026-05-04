@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import replace as dcReplace
 from typing import List, Set
 
-from src.core import (
+from src.frontend.ast import (
     ArrayRef,
     Assignment,
     BinaryOp,

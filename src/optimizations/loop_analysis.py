@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Dict, List, Optional, Set, Tuple
 
-from src.core import (
+from src.frontend.ast import (
     ArrayRef,
     Assignment,
     BinaryOp,

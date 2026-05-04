@@ -1,5 +1,5 @@
 from typing import Dict, List
-from src.core import (
+from src.frontend.ast import (
     Program, Declaration, Statement, Assignment, DoLoop, IfStatement,
     PrintStatement, ReadStatement, WriteStatement, CallStatement,
     BinaryOp, UnaryOp, Variable, IntegerLiteral, RealLiteral,

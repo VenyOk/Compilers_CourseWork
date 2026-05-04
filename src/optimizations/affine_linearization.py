@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import replace as dcReplace
 from typing import List, Optional, Tuple
 
-from src.core import ArrayRef, BinaryOp, DoLoop, Expression, FunctionCall, IfStatement, IntegerLiteral, LabeledDoLoop, Program, RealLiteral, SimpleIfStatement, UnaryOp, Variable
+from src.frontend.ast import ArrayRef, BinaryOp, DoLoop, Expression, FunctionCall, IfStatement, IntegerLiteral, LabeledDoLoop, Program, RealLiteral, SimpleIfStatement, UnaryOp, Variable
 from src.optimizations.base import ASTOptimizationPass
 
 def exprKey(expr: Expression) -> str:

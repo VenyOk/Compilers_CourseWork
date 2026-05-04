@@ -2,8 +2,8 @@ from __future__ import annotations
 from typing import List, Set, Tuple, Dict
 from dataclasses import replace as dcReplace
 
-from src.core import (
-    Program, Statement, Expression,
+from src.frontend.ast import (
+    Program, SimpleIfStatement, Statement, Expression,
     Assignment, DoLoop, LabeledDoLoop, DoWhile, LabeledDoWhile,
     IfStatement,
     Variable, BinaryOp, UnaryOp, FunctionCall, ArrayRef,

@@ -5,10 +5,11 @@ import time
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from src.core import Lexer, Parser
-from src.semantic import SemanticAnalyzer
+from src.frontend.lexer import Lexer
+from src.frontend.parser import Parser
+from src.semantic.analyzer import SemanticAnalyzer
 from src.ssa_generator import SSAGenerator
-from src.llvm_generator import LLVMGenerator
+from src.ir.llvm import LLVMGenerator
 
 EXPECTED_OUTPUTS = {
     "test_simple_arithmetic.f": "15\n5\n",

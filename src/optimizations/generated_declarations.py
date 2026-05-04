@@ -5,7 +5,7 @@ from collections import defaultdict
 from dataclasses import replace as dcReplace
 from typing import Dict, Iterable, List, Optional, Tuple
 
-from src.core import (
+from src.frontend.ast import (
     Program, Subroutine, FunctionDef, Declaration,
     ImplicitNone, ImplicitStatement,
     Statement, Assignment, DoLoop, LabeledDoLoop, DoWhile, LabeledDoWhile,

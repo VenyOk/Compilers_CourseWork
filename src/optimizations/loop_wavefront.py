@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import replace as dcReplace
 from typing import Dict, List
 
-from src.core import Assignment, BinaryOp, DoLoop, IfStatement, IntegerLiteral, LabeledDoLoop, Program, Statement, Variable
+from src.frontend.ast import Assignment, BinaryOp, DoLoop, IfStatement, IntegerLiteral, LabeledDoLoop, Program, Statement, Variable
 from src.optimizations.base import ASTOptimizationPass
 from src.optimizations.loop_analysis import buildNest, constantInt, stencilFamily, wavefrontDecision
 from src.optimizations.loop_skewing import isSkewVar

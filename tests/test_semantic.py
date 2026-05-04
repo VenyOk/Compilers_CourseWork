@@ -3,8 +3,9 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.semantic import SemanticAnalyzer
-from src.core import Lexer, Parser
+from src.semantic.analyzer import SemanticAnalyzer
+from src.frontend.lexer import Lexer
+from src.frontend.parser import Parser
 
 
 class TestImplicitValidation(unittest.TestCase):
