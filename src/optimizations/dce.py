@@ -13,12 +13,10 @@ from src.core import (
     Expression,
     FunctionCall,
     IfStatement,
-    IntegerLiteral,
     LabeledDoLoop,
     LabeledDoWhile,
     PrintStatement,
     Program,
-    ReadStatement,
     SimpleIfStatement,
     Statement,
     UnaryOp,
@@ -26,7 +24,6 @@ from src.core import (
     WriteStatement,
 )
 from src.optimizations.base import ASTOptimizationPass
-
 
 def gatherExpr(expr: Expression, out: Set[str]) -> None:
     if isinstance(expr, Variable):
@@ -42,7 +39,6 @@ def gatherExpr(expr: Expression, out: Set[str]) -> None:
     elif isinstance(expr, ArrayRef):
         for i in expr.indices:
             gatherExpr(i, out)
-
 
 def gatherStmts(stmts: List[Statement], out: Set[str]) -> None:
     for stmt in stmts:
@@ -77,13 +73,11 @@ def gatherStmts(stmts: List[Statement], out: Set[str]) -> None:
             for a in stmt.args:
                 gatherExpr(a, out)
 
-
 def isDeadGenerated(stmt: Statement, live: Set[str]) -> bool:
     if not isinstance(stmt, Assignment) or stmt.indices:
         return False
     name = stmt.target
     return (name.startswith("cse_tmp_") or name.startswith("licm_tmp_")) and name not in live
-
 
 def filterStmts(stmts: List[Statement], live: Set[str], counter: List[int]) -> List[Statement]:
     result = []
@@ -105,12 +99,10 @@ def filterStmts(stmts: List[Statement], live: Set[str], counter: List[int]) -> L
         result.append(stmt)
     return result
 
-
 def processUnit(stmts: List[Statement], counter: List[int]) -> List[Statement]:
     live: Set[str] = set()
     gatherStmts(stmts, live)
     return filterStmts(stmts, live, counter)
-
 
 class DeadCodeElimination(ASTOptimizationPass):
     name = "DeadCodeElimination"

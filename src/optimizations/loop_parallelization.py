@@ -19,14 +19,11 @@ from src.optimizations.loop_analysis import (
     wavefrontParallelDecision,
 )
 
-
 def isWavefrontVar(var: str) -> bool:
     return var.startswith("wf_")
 
-
 def isTileVar(var: str) -> bool:
     return var.startswith("tile_")
-
 
 def parallelizeStmt(stmt: Statement, counter: List[int], diagnostics: List[dict], insideWavefront: bool = False) -> Statement:
     if isinstance(stmt, ParallelDoLoop):
@@ -145,10 +142,8 @@ def parallelizeStmt(stmt: Statement, counter: List[int], diagnostics: List[dict]
         return stmt
     return stmt
 
-
 def processStatements(stmts: List[Statement], counter: List[int], diagnostics: List[dict]) -> List[Statement]:
     return [parallelizeStmt(stmt, counter, diagnostics, False) for stmt in stmts]
-
 
 class LoopParallelization(ASTOptimizationPass):
     name = "LoopParallelization"

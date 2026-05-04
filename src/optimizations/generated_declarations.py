@@ -15,16 +15,13 @@ from src.core import (
 )
 from src.optimizations.base import ASTOptimizationPass
 
-
 GENERATED_NAME_RE = re.compile(
     r"^(?:cse_tmp_\d+|licm_tmp_\d+|tile_[A-Za-z0-9_]+|skew_[A-Za-z0-9_]+|wf_[A-Za-z0-9_]+)$",
     re.IGNORECASE,
 )
 
-
 def isGeneratedName(name: str) -> bool:
     return bool(GENERATED_NAME_RE.match(name))
-
 
 def normalizeType(typeName: Optional[str]) -> Optional[str]:
     if not typeName:
@@ -38,7 +35,6 @@ def normalizeType(typeName: Optional[str]) -> Optional[str]:
         return upper
     return None
 
-
 def buildTypeEnv(declarations: List) -> Dict[str, str]:
     env: Dict[str, str] = {}
     for decl in declarations:
@@ -50,7 +46,6 @@ def buildTypeEnv(declarations: List) -> Dict[str, str]:
         for name, _ in decl.names:
             env[name] = norm
     return env
-
 
 def mergeNumericTypes(left: Optional[str], right: Optional[str]) -> Optional[str]:
     if left == "COMPLEX" or right == "COMPLEX":
@@ -64,7 +59,6 @@ def mergeNumericTypes(left: Optional[str], right: Optional[str]) -> Optional[str
     if left == "CHARACTER" and right == "CHARACTER":
         return "CHARACTER"
     return left or right
-
 
 def inferExprType(expr: Expression, env: Dict[str, str]) -> Optional[str]:
     if isinstance(expr, IntegerLiteral):
@@ -104,7 +98,6 @@ def inferExprType(expr: Expression, env: Dict[str, str]) -> Optional[str]:
             return current
     return None
 
-
 def collectGeneratedLoopVars(stmt: Statement, out: Dict[str, str]) -> None:
     if isinstance(stmt, (DoLoop, LabeledDoLoop)):
         if isGeneratedName(stmt.var):
@@ -126,7 +119,6 @@ def collectGeneratedLoopVars(stmt: Statement, out: Dict[str, str]) -> None:
     elif isinstance(stmt, SimpleIfStatement):
         collectGeneratedLoopVars(stmt.statement, out)
 
-
 def iterStatements(stmts: List[Statement]) -> Iterable[Statement]:
     for stmt in stmts:
         yield stmt
@@ -141,14 +133,12 @@ def iterStatements(stmts: List[Statement]) -> Iterable[Statement]:
         elif isinstance(stmt, SimpleIfStatement):
             yield from iterStatements([stmt.statement])
 
-
 def collectGeneratedAssignments(stmts: List[Statement]) -> Dict[str, List[Expression]]:
     assignments: Dict[str, List[Expression]] = defaultdict(list)
     for stmt in iterStatements(stmts):
         if isinstance(stmt, Assignment) and not stmt.indices and isGeneratedName(stmt.target):
             assignments[stmt.target].append(stmt.value)
     return assignments
-
 
 def inferGeneratedTypes(declarations: List, statements: List[Statement]) -> Dict[str, str]:
     env = buildTypeEnv(declarations)
@@ -174,7 +164,6 @@ def inferGeneratedTypes(declarations: List, statements: List[Statement]) -> Dict
         generated.setdefault(name, "INTEGER")
     return generated
 
-
 def existingDeclaredNames(declarations: List) -> Dict[str, str]:
     names: Dict[str, str] = {}
     for decl in declarations:
@@ -183,13 +172,11 @@ def existingDeclaredNames(declarations: List) -> Dict[str, str]:
                 names[name] = name
     return names
 
-
 def declarationInsertionIndex(declarations: List) -> int:
     idx = 0
     while idx < len(declarations) and isinstance(declarations[idx], (ImplicitNone, ImplicitStatement)):
         idx += 1
     return idx
-
 
 def addGeneratedDeclarations(declarations: List, statements: List[Statement]) -> Tuple[List, int]:
     generated = inferGeneratedTypes(declarations, statements)
@@ -214,7 +201,6 @@ def addGeneratedDeclarations(declarations: List, statements: List[Statement]) ->
     updated = newDecls[:insertAt] + additions + newDecls[insertAt:]
     count = sum(len(decl.names) for decl in additions)
     return updated, count
-
 
 class GeneratedVariableDeclarations(ASTOptimizationPass):
     name = "GeneratedVariableDeclarations"

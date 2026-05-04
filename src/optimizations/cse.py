@@ -5,16 +5,14 @@ from dataclasses import replace as dcReplace
 from src.core import (
     Program, Statement, Expression,
     Assignment, DoLoop, LabeledDoLoop, DoWhile, LabeledDoWhile,
-    IfStatement, SimpleIfStatement,
+    IfStatement,
     Variable, BinaryOp, UnaryOp, FunctionCall, ArrayRef,
     IntegerLiteral, RealLiteral,
     PrintStatement, WriteStatement, CallStatement,
 )
 from src.optimizations.base import ASTOptimizationPass
 
-
 GLOBAL_CSE_COUNTER = [0]
-
 
 def exprKey(expr: Expression) -> str:
     if isinstance(expr, IntegerLiteral):
@@ -39,7 +37,6 @@ def exprKey(expr: Expression) -> str:
         return f"{expr.name}[{idx}]"
     return repr(expr)
 
-
 def isPure(expr: Expression) -> bool:
     if isinstance(expr, (IntegerLiteral, RealLiteral, Variable)):
         return True
@@ -56,10 +53,8 @@ def isPure(expr: Expression) -> bool:
         return expr.name.upper() in pureFuncs and all(isPure(a) for a in expr.args)
     return False
 
-
 def isTrivial(expr: Expression) -> bool:
     return isinstance(expr, (IntegerLiteral, RealLiteral, Variable))
-
 
 def varsInExpr(expr: Expression, result: Set[str]) -> None:
     if isinstance(expr, Variable):
@@ -76,7 +71,6 @@ def varsInExpr(expr: Expression, result: Set[str]) -> None:
     elif isinstance(expr, FunctionCall):
         for a in expr.args:
             varsInExpr(a, result)
-
 
 class CSEBlock:
     def __init__(self, counter: List[int]):
@@ -166,7 +160,6 @@ class CSEBlock:
             newStmt = stmt
         return self.newAssigns + [newStmt]
 
-
 def applyCseToStmts(stmts: List[Statement], counter: List[int]) -> List[Statement]:
     block = CSEBlock(counter)
     result = []
@@ -187,7 +180,6 @@ def applyCseToStmts(stmts: List[Statement], counter: List[int]) -> List[Statemen
         else:
             result.extend(block.process(stmt))
     return result
-
 
 class CommonSubexpressionElimination(ASTOptimizationPass):
     name = "CommonSubexpressionElimination"

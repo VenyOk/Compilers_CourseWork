@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import os
 from copy import deepcopy
 from dataclasses import replace as dcReplace
@@ -23,7 +22,6 @@ from src.optimizations.base import ASTOptimizationPass
 from src.optimizations.loop_analysis import (
     LoopNest,
     buildNest,
-    chooseIntraTileLoopOrder,
     constantInt,
     countArrayAccesses,
     effectiveStateCarriedPrefixDepth,
@@ -34,14 +32,11 @@ from src.optimizations.loop_analysis import (
     uniqueArrayCount,
 )
 
-
 def tileVarName(var: str) -> str:
     return f"tile_{var}"
 
-
 def isTileVar(var: str) -> bool:
     return var.startswith("tile_")
-
 
 def optimalTileSize(depth: int, l1Bytes: int = 32 * 1024, elemSize: int = 8) -> int:
     nElems = max(l1Bytes // elemSize, 16)
@@ -49,13 +44,11 @@ def optimalTileSize(depth: int, l1Bytes: int = 32 * 1024, elemSize: int = 8) -> 
     size = int(round(nElems ** (1.0 / d))) - 2
     return max(size, 2)
 
-
 def workingSetTileSize(depth: int, nArrays: int, l1Bytes: int = 32 * 1024, elemSize: int = 8) -> int:
     nElems = max(l1Bytes // (max(nArrays, 1) * elemSize), 4)
     d = max(depth, 2)
     size = int(round(nElems ** (1.0 / d))) - 2
     return max(size, 2)
-
 
 def tileSizesFromEnv() -> Optional[List[int]]:
     raw = os.environ.get("FORTRAN_TILE_SIZES", "").strip()
@@ -69,14 +62,11 @@ def tileSizesFromEnv() -> Optional[List[int]]:
         return None
     return [max(value, 1) for value in values]
 
-
 def intExpr(value: int, line: int, col: int) -> IntegerLiteral:
     return IntegerLiteral(value=value, line=line, col=col)
 
-
 def isZeroExpr(expr: Expression) -> bool:
     return isinstance(expr, IntegerLiteral) and expr.value == 0
-
 
 def addExpr(left: Expression, right: Expression, line: int, col: int) -> Expression:
     if isZeroExpr(left):
@@ -85,12 +75,10 @@ def addExpr(left: Expression, right: Expression, line: int, col: int) -> Express
         return left
     return BinaryOp(left=left, op="+", right=right, line=line, col=col)
 
-
 def subExpr(left: Expression, right: Expression, line: int, col: int) -> Expression:
     if isZeroExpr(right):
         return left
     return BinaryOp(left=left, op="-", right=right, line=line, col=col)
-
 
 def negExpr(expr: Expression, line: int, col: int) -> Expression:
     if isZeroExpr(expr):
@@ -98,7 +86,6 @@ def negExpr(expr: Expression, line: int, col: int) -> Expression:
     if isinstance(expr, IntegerLiteral):
         return intExpr(-expr.value, line, col)
     return UnaryOp(op="-", operand=expr, line=line, col=col)
-
 
 def mulExprByInt(expr: Expression, factor: int, line: int, col: int) -> Expression:
     if factor == 0:
@@ -109,20 +96,16 @@ def mulExprByInt(expr: Expression, factor: int, line: int, col: int) -> Expressi
         return negExpr(expr, line, col)
     return BinaryOp(left=intExpr(factor, line, col), op="*", right=expr, line=line, col=col)
 
-
 def addInt(expr: Expression, value: int) -> Expression:
     if value == 0:
         return expr
     return addExpr(expr, intExpr(value, expr.line, expr.col), expr.line, expr.col)
 
-
 def minExpr(left: Expression, right: Expression) -> Expression:
     return FunctionCall(name="MIN", args=[left, right], line=left.line, col=left.col)
 
-
 def maxExpr(left: Expression, right: Expression) -> Expression:
     return FunctionCall(name="MAX", args=[left, right], line=left.line, col=left.col)
-
 
 def substituteExpr(expr: Expression, substitutions: Dict[str, Expression]) -> Expression:
     if isinstance(expr, Variable) and expr.name in substitutions:
@@ -143,7 +126,6 @@ def substituteExpr(expr: Expression, substitutions: Dict[str, Expression]) -> Ex
     if isinstance(expr, ArrayRef):
         return dcReplace(expr, indices=[substituteExpr(index, substitutions) for index in expr.indices])
     return expr
-
 
 def tileSizesForNest(nest: LoopNest, baseTileSize: Optional[int], l1Bytes: int, override: Optional[List[int]] = None) -> List[int]:
     if override:
@@ -215,7 +197,6 @@ def tileSizesForNest(nest: LoopNest, baseTileSize: Optional[int], l1Bytes: int, 
 
     return [chooseAxis(count) for count in trip_counts]
 
-
 def buildBounds(nest: LoopNest, tileSizes: List[int]):
     line = nest.loops[0].node.line
     col = nest.loops[0].node.col
@@ -242,7 +223,6 @@ def buildBounds(nest: LoopNest, tileSizes: List[int]):
         tile_infos.append((tile_var, start_bound, end_bound, step_value * tileSizes[index]))
         point_infos.append((loop_info.var, point_start, point_end, loop_info.step))
     return tile_infos, point_infos
-
 
 def tileAffineNest(nest: LoopNest, tileSizes: List[int]) -> Optional[Statement]:
     bounds = buildBounds(nest, tileSizes)
@@ -278,7 +258,6 @@ def tileAffineNest(nest: LoopNest, tileSizes: List[int]) -> Optional[Statement]:
         )]
     return body[0]
 
-
 def tileDiagnostic(nest: LoopNest, tile_sizes: List[int]) -> Dict[str, object]:
     return {
         "vars": list(nest.vars),
@@ -288,7 +267,6 @@ def tileDiagnostic(nest: LoopNest, tile_sizes: List[int]) -> Dict[str, object]:
         "state_prefix_depth": effectiveStateCarriedPrefixDepth(nest),
         "accesses": countArrayAccesses(nest),
     }
-
 
 def tryTile(loop: Statement, baseTileSize: Optional[int], minDepth: int, l1Bytes: int, counter: List[int], diagnostics: List[Dict[str, object]]) -> Statement:
     if not isinstance(loop, (DoLoop, LabeledDoLoop)):
@@ -313,7 +291,6 @@ def tryTile(loop: Statement, baseTileSize: Optional[int], minDepth: int, l1Bytes
         return transformed
     return dcReplace(loop, body=[tryTile(stmt, baseTileSize, minDepth, l1Bytes, counter, diagnostics) for stmt in loop.body])
 
-
 def processStmts(stmts: List[Statement], baseTileSize: Optional[int], minDepth: int, l1Bytes: int, counter: List[int], diagnostics: List[Dict[str, object]]) -> List[Statement]:
     result = []
     for stmt in stmts:
@@ -322,7 +299,6 @@ def processStmts(stmts: List[Statement], baseTileSize: Optional[int], minDepth: 
         else:
             result.append(stmt)
     return result
-
 
 class LoopTiling(ASTOptimizationPass):
     name = "LoopTiling"

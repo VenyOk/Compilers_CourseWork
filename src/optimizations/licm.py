@@ -5,17 +5,15 @@ from dataclasses import replace as dcReplace
 from src.core import (
     Program, Statement, Expression,
     Assignment, DoLoop, LabeledDoLoop, DoWhile, LabeledDoWhile,
-    IfStatement, SimpleIfStatement,
+    IfStatement,
     Variable, BinaryOp, UnaryOp, FunctionCall, ArrayRef,
     IntegerLiteral, RealLiteral, LogicalLiteral, StringLiteral,
-    PrintStatement, WriteStatement, ReadStatement, CallStatement,
+    PrintStatement, WriteStatement, CallStatement,
 )
 from src.optimizations.base import ASTOptimizationPass
 
-
 HOIST_OPS = {'*', '/', '**', '+', '-'}
 GLOBAL_LICM_COUNTER = [0]
-
 
 def collectModified(stmts: List[Statement], result: Set[str]) -> None:
     for stmt in stmts:
@@ -33,7 +31,6 @@ def collectModified(stmts: List[Statement], result: Set[str]) -> None:
             if stmt.else_body:
                 collectModified(stmt.else_body, result)
 
-
 def usesModified(expr: Expression, modified: Set[str]) -> bool:
     if isinstance(expr, Variable):
         return expr.name in modified
@@ -47,10 +44,8 @@ def usesModified(expr: Expression, modified: Set[str]) -> bool:
         return any(usesModified(a, modified) for a in expr.args)
     return False
 
-
 def isTrivialExpr(expr: Expression) -> bool:
     return isinstance(expr, (IntegerLiteral, RealLiteral, LogicalLiteral, StringLiteral, Variable))
-
 
 def containsReal(expr: Expression) -> bool:
     if isinstance(expr, RealLiteral):
@@ -67,7 +62,6 @@ def containsReal(expr: Expression) -> bool:
         return expr.name.upper() in realFuncs
     return False
 
-
 def worthHoisting(expr: Expression) -> bool:
     if isinstance(expr, BinaryOp):
         if expr.op not in HOIST_OPS:
@@ -80,7 +74,6 @@ def worthHoisting(expr: Expression) -> bool:
     if isinstance(expr, UnaryOp):
         return not isTrivialExpr(expr.operand) and containsReal(expr.operand)
     return False
-
 
 def exprRepr(expr: Expression) -> str:
     if isinstance(expr, IntegerLiteral):
@@ -100,7 +93,6 @@ def exprRepr(expr: Expression) -> str:
         idx = ",".join(exprRepr(i) for i in expr.indices)
         return f"{expr.name}[{idx}]"
     return repr(expr)
-
 
 class ExprHoister:
     def __init__(self, modified: Set[str], counterRef: List[int]):
@@ -178,7 +170,6 @@ class ExprHoister:
             return dcReplace(stmt, args=na)
         return stmt
 
-
 def processLoop(loop: Statement, counter: List[int]) -> Tuple[List[Statement], Statement]:
     if isinstance(loop, (DoLoop, LabeledDoLoop)):
         modified: Set[str] = {loop.var}
@@ -203,7 +194,6 @@ def processLoop(loop: Statement, counter: List[int]) -> Tuple[List[Statement], S
         ))
     return preheader, newLoop
 
-
 def processStmts(stmts: List[Statement], counter: List[int]) -> List[Statement]:
     result = []
     for stmt in stmts:
@@ -221,7 +211,6 @@ def processStmts(stmts: List[Statement], counter: List[int]) -> List[Statement]:
         else:
             result.append(stmt)
     return result
-
 
 class LoopInvariantCodeMotion(ASTOptimizationPass):
     name = "LoopInvariantCodeMotion"

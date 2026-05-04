@@ -32,7 +32,6 @@ from src.core import (
     ExitStatement,
 )
 
-
 @dataclass
 class LoopInfo:
     var: str
@@ -40,7 +39,6 @@ class LoopInfo:
     end: Expression
     step: Expression
     node: Statement
-
 
 @dataclass
 class LoopNest:
@@ -55,7 +53,6 @@ class LoopNest:
     def vars(self) -> List[str]:
         return [loop_info.var for loop_info in self.loops]
 
-
 @dataclass
 class AffineExpr:
     coeffs: Dict[str, int]
@@ -64,7 +61,6 @@ class AffineExpr:
     def coeff(self, var: str) -> int:
         return self.coeffs.get(var, 0)
 
-
 @dataclass
 class ArrayAccess:
     array_name: str
@@ -72,10 +68,8 @@ class ArrayAccess:
     is_write: bool
     order: int
 
-
 def articleModeEnabled() -> bool:
     return True
-
 
 @dataclass
 class DependenceVector:
@@ -112,7 +106,6 @@ class DependenceVector:
     def allNonNegative(self) -> bool:
         return all(distance is None or distance >= 0 for distance in self.distances)
 
-
 def constantInt(expr: Expression) -> Optional[int]:
     if isinstance(expr, IntegerLiteral):
         return expr.value
@@ -121,7 +114,6 @@ def constantInt(expr: Expression) -> Optional[int]:
         if inner is not None:
             return -inner
     return None
-
 
 def mergeCoeffs(left: Dict[str, int], right: Dict[str, int], sign: int = 1) -> Dict[str, int]:
     result = dict(left)
@@ -132,7 +124,6 @@ def mergeCoeffs(left: Dict[str, int], right: Dict[str, int], sign: int = 1) -> D
         else:
             result[var] = updated
     return result
-
 
 def parseAffine(expr: Expression, loop_vars: Set[str], allow_symbols: bool = False) -> Optional[AffineExpr]:
     if isinstance(expr, IntegerLiteral):
@@ -191,7 +182,6 @@ def parseAffine(expr: Expression, loop_vars: Set[str], allow_symbols: bool = Fal
                 )
     return None
 
-
 def isAffineNest(nest: LoopNest) -> bool:
     if nest.depth == 0:
         return False
@@ -205,7 +195,6 @@ def isAffineNest(nest: LoopNest) -> bool:
         if step is None or step <= 0:
             return False
     return True
-
 
 def collectInExpr(
     expr: Expression,
@@ -236,7 +225,6 @@ def collectInExpr(
     if isinstance(expr, FunctionCall):
         for arg in expr.args:
             collectInExpr(arg, loop_vars, accesses, order_ref)
-
 
 def collectInStmt(
     stmt: Statement,
@@ -301,14 +289,12 @@ def collectInStmt(
     if isinstance(stmt, (ReturnStatement, StopStatement, ContinueStatement)):
         return
 
-
 def collectAccesses(stmts: List[Statement], loop_vars: Set[str]) -> List[ArrayAccess]:
     accesses: List[ArrayAccess] = []
     order_ref = [0]
     for stmt in stmts:
         collectInStmt(stmt, loop_vars, accesses, order_ref)
     return accesses
-
 
 def exprAffineStatus(expr: Expression, loop_vars: Set[str]) -> Tuple[bool, bool]:
     if isinstance(expr, ArrayRef):
@@ -335,7 +321,6 @@ def exprAffineStatus(expr: Expression, loop_vars: Set[str]) -> Tuple[bool, bool]
             is_affine = is_affine and arg_affine
         return has_access, is_affine
     return False, True
-
 
 def stmtAffineStatus(stmt: Statement, loop_vars: Set[str]) -> Tuple[bool, bool]:
     if isinstance(stmt, Assignment):
@@ -419,7 +404,6 @@ def stmtAffineStatus(stmt: Statement, loop_vars: Set[str]) -> Tuple[bool, bool]:
         return has_access, is_affine
     return False, True
 
-
 def accessStatus(stmts: List[Statement], loop_vars: Set[str]) -> Tuple[bool, bool]:
     has_access = False
     all_affine = True
@@ -429,10 +413,8 @@ def accessStatus(stmts: List[Statement], loop_vars: Set[str]) -> Tuple[bool, boo
         all_affine = all_affine and stmt_affine
     return has_access, all_affine
 
-
 def coefficientMatrix(access: ArrayAccess, loop_vars: List[str]) -> List[List[int]]:
     return [[index.coeff(var) for var in loop_vars] for index in access.indices]
-
 
 def solveIntegerSystem(matrix: List[List[int]], rhs: List[int], nvars: int) -> Optional[List[Optional[int]]]:
     active_vars = [
@@ -489,7 +471,6 @@ def solveIntegerSystem(matrix: List[List[int]], rhs: List[int], nvars: int) -> O
         solution[var_index] = int(reduced_solution[local_index])
     return solution
 
-
 def computeDistances(source: ArrayAccess, sink: ArrayAccess, loop_vars: List[str]) -> Optional[List[Optional[int]]]:
     if len(source.indices) != len(sink.indices):
         return None
@@ -499,7 +480,6 @@ def computeDistances(source: ArrayAccess, sink: ArrayAccess, loop_vars: List[str
         return None
     rhs = [src_index.const - sink_index.const for src_index, sink_index in zip(source.indices, sink.indices)]
     return solveIntegerSystem(source_matrix, rhs, len(loop_vars))
-
 
 def computeDependenceVectors(nest: LoopNest) -> List[DependenceVector]:
     if nest.depth == 0 or not isAffineNest(nest):
@@ -563,7 +543,6 @@ def computeDependenceVectors(nest: LoopNest) -> List[DependenceVector]:
         dependencies.extend(extra_dependencies)
     return dependencies
 
-
 def buildNest(loop: Statement) -> LoopNest:
     loops: List[LoopInfo] = []
     current = loop
@@ -584,7 +563,6 @@ def buildNest(loop: Statement) -> LoopNest:
             return LoopNest(loops=loops, body=body)
     return LoopNest(loops=loops, body=[])
 
-
 def extractLoopNests(stmts: List[Statement]) -> List[Tuple[List[Statement], LoopNest, int]]:
     results = []
     for index, stmt in enumerate(stmts):
@@ -593,7 +571,6 @@ def extractLoopNests(stmts: List[Statement]) -> List[Tuple[List[Statement], Loop
             if nest.depth >= 1:
                 results.append((stmts[:index], nest, index))
     return results
-
 
 def estimateTripCount(loop_info: LoopInfo) -> Optional[int]:
     start = constantInt(loop_info.start)
@@ -609,7 +586,6 @@ def estimateTripCount(loop_info: LoopInfo) -> Optional[int]:
         return 0
     return ((start - end) // (-step)) + 1
 
-
 def estimateNestVolume(nest: LoopNest, limit_depth: Optional[int] = None) -> Optional[int]:
     volume = 1
     depth = nest.depth if limit_depth is None else min(nest.depth, limit_depth)
@@ -620,15 +596,12 @@ def estimateNestVolume(nest: LoopNest, limit_depth: Optional[int] = None) -> Opt
         volume *= max(trip_count, 0)
     return volume
 
-
 def hasArrayAccesses(nest: LoopNest) -> bool:
     has_access, _ = accessStatus(nest.body, set(nest.vars))
     return has_access
 
-
 def isGeneratedLoopVar(var: str) -> bool:
     return var.startswith(("tile_", "skew_", "wf_"))
-
 
 def baseActiveLoopVars(nest: LoopNest) -> Set[str]:
     active: Set[str] = set()
@@ -639,13 +612,11 @@ def baseActiveLoopVars(nest: LoopNest) -> Set[str]:
                     active.add(var)
     return active
 
-
 def selfDependentArrays(nest: LoopNest) -> Set[str]:
     accesses = collectAccesses(nest.body, set(nest.vars))
     read_arrays = {access.array_name.upper() for access in accesses if not access.is_write}
     write_arrays = {access.array_name.upper() for access in accesses if access.is_write}
     return read_arrays & write_arrays
-
 
 def stateCarriedPrefixDepth(nest: LoopNest) -> int:
     if nest.depth != 3:
@@ -664,14 +635,12 @@ def stateCarriedPrefixDepth(nest: LoopNest) -> int:
         depth += 1
     return depth if depth < nest.depth else 0
 
-
 def activeLoopVars(nest: LoopNest) -> Set[str]:
     active = baseActiveLoopVars(nest)
     prefix_depth = effectiveStateCarriedPrefixDepth(nest)
     for loop_info in nest.loops[:prefix_depth]:
         active.add(loop_info.var)
     return active
-
 
 def localityScore(accesses: List[ArrayAccess], var: str) -> int:
     score = 0
@@ -684,13 +653,11 @@ def localityScore(accesses: List[ArrayAccess], var: str) -> int:
             score += coeff * (rank - dim)
     return score
 
-
 def spatialCarrierDepth(dep: DependenceVector, prefix_depth: int) -> Optional[int]:
     for index, distance in enumerate(dep.distances[prefix_depth:]):
         if distance not in (None, 0):
             return index
     return None
-
 
 def spatialDependenceBandDepth(nest: LoopNest, prefix_depth: int) -> int:
     dependencies = computeDependenceVectors(nest)
@@ -704,7 +671,6 @@ def spatialDependenceBandDepth(nest: LoopNest, prefix_depth: int) -> int:
         seen = True
     return deepest if seen else 1
 
-
 def isStencilLikeNest(nest: LoopNest) -> bool:
     if not selfDependentArrays(nest):
         return False
@@ -717,18 +683,14 @@ def isStencilLikeNest(nest: LoopNest) -> bool:
         return False
     return True
 
-
 def uniqueArrayCount(nest: LoopNest) -> int:
     return len({access.array_name.upper() for access in collectAccesses(nest.body, set(nest.vars))})
-
 
 def isCoefficientHeavyStencil(nest: LoopNest) -> bool:
     return isStencilLikeNest(nest) and uniqueArrayCount(nest) >= 6 and countArrayAccesses(nest) >= 8
 
-
 def isSimpleSingleArrayStencil(nest: LoopNest) -> bool:
     return isStencilLikeNest(nest) and uniqueArrayCount(nest) == 1
-
 
 def effectiveStateCarriedPrefixDepth(nest: LoopNest) -> int:
     if nest.depth >= 3 and not isGeneratedLoopVar(nest.loops[0].var):
@@ -745,7 +707,6 @@ def effectiveStateCarriedPrefixDepth(nest: LoopNest) -> int:
             break
         depth += 1
     return depth if 0 < depth < nest.depth else 0
-
 
 def stencilFamily(nest: LoopNest) -> str:
     prefix_depth = effectiveStateCarriedPrefixDepth(nest)
@@ -768,7 +729,6 @@ def stencilFamily(nest: LoopNest) -> str:
         return "affine_loop_nest"
     return "non_array_nest"
 
-
 def stencilReuseScore(nest: LoopNest) -> int:
     score = 0
     loop_vars = nest.vars
@@ -787,7 +747,6 @@ def stencilReuseScore(nest: LoopNest) -> int:
         if access.is_write:
             score += 1
     return score
-
 
 def axisDependenceScore(nest: LoopNest, var: str) -> int:
     if var not in nest.vars:
@@ -808,7 +767,6 @@ def axisDependenceScore(nest: LoopNest, var: str) -> int:
             score += 4
     return score
 
-
 def referencedLoopVars(expr: Expression, loop_vars: Set[str]) -> Set[str]:
     if isinstance(expr, Variable):
         return {expr.name} if expr.name in loop_vars else set()
@@ -827,7 +785,6 @@ def referencedLoopVars(expr: Expression, loop_vars: Set[str]) -> Set[str]:
             result.update(referencedLoopVars(arg, loop_vars))
         return result
     return set()
-
 
 def chooseIntraTileLoopOrder(nest: LoopNest) -> List[int]:
     if nest.depth <= 1:
@@ -868,7 +825,6 @@ def chooseIntraTileLoopOrder(nest: LoopNest) -> List[int]:
         remaining.remove(chosen)
     return ordered
 
-
 def preferInterchange(nest: LoopNest) -> bool:
     if nest.depth < 2 or not isAffineNest(nest):
         return False
@@ -896,7 +852,6 @@ def preferInterchange(nest: LoopNest) -> bool:
         return False
     return True
 
-
 def canInterchange(nest: LoopNest) -> bool:
     if nest.depth < 2 or not isAffineNest(nest):
         return False
@@ -907,7 +862,6 @@ def canInterchange(nest: LoopNest) -> bool:
         return False
     dependencies = computeDependenceVectors(nest)
     return all(dep.allNonNegative() for dep in dependencies)
-
 
 def tileDecision(nest: LoopNest, tile_size: int, min_depth: int) -> Tuple[bool, str]:
     if nest.depth < min_depth:
@@ -928,16 +882,13 @@ def tileDecision(nest: LoopNest, tile_size: int, min_depth: int) -> Tuple[bool, 
         return True, "iterative stencil follows article tiling path"
     return True, "affine iterative nest follows O3 tiling path"
 
-
 def shouldTileNest(nest: LoopNest, tile_size: int, min_depth: int) -> bool:
     return tileDecision(nest, tile_size, min_depth)[0]
-
 
 def dependenceBandDepth(nest: LoopNest) -> int:
     prefix_depth = stateCarriedPrefixDepth(nest)
     spatial_depth = spatialDependenceBandDepth(nest, prefix_depth)
     return min(nest.depth, prefix_depth + spatial_depth)
-
 
 def needsSkewing(nest: LoopNest) -> bool:
     if nest.depth < 2 or not isAffineNest(nest):
@@ -949,7 +900,6 @@ def needsSkewing(nest: LoopNest) -> bool:
         return False
     return dependenceBandDepth(nest) > 1
 
-
 def skewDecision(nest: LoopNest) -> Tuple[bool, str]:
     if not needsSkewing(nest):
         return False, "dependence band does not require skewing"
@@ -958,10 +908,8 @@ def skewDecision(nest: LoopNest) -> Tuple[bool, str]:
         return True, "negative carried dependences require skewing before article tiling"
     return True, "dependence vectors require article skewing"
 
-
 def shouldSkewNest(nest: LoopNest) -> bool:
     return skewDecision(nest)[0]
-
 
 def getSkewMatrix(nest: LoopNest) -> List[List[int]]:
     matrix = [[0 for _ in range(nest.depth)] for _ in range(nest.depth)]
@@ -977,7 +925,6 @@ def getSkewMatrix(nest: LoopNest) -> List[List[int]]:
                 matrix[inner_index][outer_index] = max(matrix[inner_index][outer_index], abs(distance))
     return matrix
 
-
 def getSkewFactors(nest: LoopNest) -> List[int]:
     matrix = getSkewMatrix(nest)
     factors = [0] * nest.depth
@@ -985,10 +932,8 @@ def getSkewFactors(nest: LoopNest) -> List[int]:
         factors[inner_index] = sum(matrix[inner_index][:inner_index])
     return factors
 
-
 def countArrayAccesses(nest: LoopNest) -> int:
     return len(collectAccesses(nest.body, set(nest.vars)))
-
 
 def estimateWorkingSet(nest: LoopNest, bytes_per_element: int = 8) -> Optional[int]:
     accesses = collectAccesses(nest.body, set(nest.vars))
@@ -1000,7 +945,6 @@ def estimateWorkingSet(nest: LoopNest, bytes_per_element: int = 8) -> Optional[i
     unique_arrays = len({access.array_name.upper() for access in accesses})
     return unique_arrays * volume * bytes_per_element
 
-
 def prefixLoopDepth(nest: LoopNest, prefix: str) -> int:
     depth = 0
     for loop_info in nest.loops:
@@ -1010,11 +954,9 @@ def prefixLoopDepth(nest: LoopNest, prefix: str) -> int:
             break
     return depth
 
-
 def pointSkewDepth(nest: LoopNest) -> int:
     tile_depth = prefixLoopDepth(nest, "tile_")
     return sum(1 for loop_info in nest.loops[tile_depth:] if loop_info.var.startswith("skew_"))
-
 
 def estimatePrefixVolume(nest: LoopNest, depth: int) -> Optional[int]:
     if depth <= 0:
@@ -1026,7 +968,6 @@ def estimatePrefixVolume(nest: LoopNest, depth: int) -> Optional[int]:
             return None
         volume *= max(trip_count, 0)
     return volume
-
 
 def estimateTileFootprint(nest: LoopNest) -> Optional[int]:
     tile_depth = prefixLoopDepth(nest, "tile_")
@@ -1051,7 +992,6 @@ def estimateTileFootprint(nest: LoopNest) -> Optional[int]:
         return None
     return footprint
 
-
 def estimateTransformedWorkingSet(nest: LoopNest, bytes_per_element: int = 8) -> Optional[int]:
     accesses = collectAccesses(nest.body, set(nest.vars))
     if not accesses:
@@ -1061,7 +1001,6 @@ def estimateTransformedWorkingSet(nest: LoopNest, bytes_per_element: int = 8) ->
     if tile_footprint is not None:
         return unique_arrays * tile_footprint * bytes_per_element
     return estimateWorkingSet(nest, bytes_per_element=bytes_per_element)
-
 
 def containsUnsupportedParallelControl(stmts: List[Statement]) -> bool:
     for stmt in stmts:
@@ -1085,7 +1024,6 @@ def containsUnsupportedParallelControl(stmts: List[Statement]) -> bool:
                 return True
     return False
 
-
 def collectRegionLoopVars(stmts: List[Statement]) -> Set[str]:
     result: Set[str] = set()
     for stmt in stmts:
@@ -1102,10 +1040,8 @@ def collectRegionLoopVars(stmts: List[Statement]) -> Set[str]:
             result.update(collectRegionLoopVars([stmt.statement]))
     return result
 
-
 def isPrivatizableScalarName(name: str) -> bool:
     return name.startswith(("cse_tmp_", "licm_tmp_", "tile_", "skew_", "wf_"))
-
 
 def exprReadsVariable(expr: Expression, name: str) -> bool:
     if isinstance(expr, Variable):
@@ -1119,7 +1055,6 @@ def exprReadsVariable(expr: Expression, name: str) -> bool:
     if isinstance(expr, FunctionCall):
         return any(exprReadsVariable(arg, name) for arg in expr.args)
     return False
-
 
 def scalarAssignmentCount(stmts: List[Statement], name: str) -> int:
     count = 0
@@ -1141,7 +1076,6 @@ def scalarAssignmentCount(stmts: List[Statement], name: str) -> int:
         if isinstance(stmt, SimpleIfStatement):
             count += scalarAssignmentCount([stmt.statement], name)
     return count
-
 
 def readBeforeAssignStatus(stmts: List[Statement], name: str, assigned: bool = False) -> Tuple[bool, bool]:
     current_assigned = assigned
@@ -1188,13 +1122,11 @@ def readBeforeAssignStatus(stmts: List[Statement], name: str, assigned: bool = F
             current_assigned = current_assigned or nested_assigned
     return True, current_assigned
 
-
 def canPrivatizeUserScalar(stmts: List[Statement], name: str) -> bool:
     if scalarAssignmentCount(stmts, name) < 2:
         return False
     safe, assigned = readBeforeAssignStatus(stmts, name, False)
     return safe and assigned
-
 
 def collectPrivatizableScalars(stmts: List[Statement], private_vars: Set[str]) -> Set[str]:
     result: Set[str] = set()
@@ -1218,7 +1150,6 @@ def collectPrivatizableScalars(stmts: List[Statement], private_vars: Set[str]) -
         if isinstance(stmt, SimpleIfStatement):
             result.update(collectPrivatizableScalars([stmt.statement], private_vars))
     return result
-
 
 def hasUnsafeScalarWrites(stmts: List[Statement], private_vars: Set[str]) -> bool:
     for stmt in stmts:
@@ -1246,7 +1177,6 @@ def hasUnsafeScalarWrites(stmts: List[Statement], private_vars: Set[str]) -> boo
                 return True
     return False
 
-
 def isSafeParallelBody(stmts: List[Statement], private_vars: Set[str]) -> bool:
     if containsUnsupportedParallelControl(stmts):
         return False
@@ -1256,10 +1186,8 @@ def isSafeParallelBody(stmts: List[Statement], private_vars: Set[str]) -> bool:
         return False
     return True
 
-
 def shouldWavefrontNest(nest: LoopNest) -> bool:
     return wavefrontDecision(nest)[0]
-
 
 def wavefrontDecision(nest: LoopNest) -> Tuple[bool, str]:
     tile_depth = prefixLoopDepth(nest, "tile_")
@@ -1276,10 +1204,8 @@ def wavefrontDecision(nest: LoopNest) -> Tuple[bool, str]:
         return True, "single-array stencil follows hyperplane traversal"
     return False, "wavefront is reserved for skewed iterative bands or single-array stencils"
 
-
 def shouldParallelizeIndependentNest(nest: LoopNest) -> bool:
     return independentParallelDecision(nest)[0]
-
 
 def independentParallelDecision(nest: LoopNest) -> Tuple[bool, str]:
     if nest.depth == 0 or not isAffineNest(nest):
@@ -1309,7 +1235,6 @@ def independentParallelDecision(nest: LoopNest) -> Tuple[bool, str]:
         return False, "body contains unsupported control or unsafe scalar writes"
     return True, "independent loop band is profitable for parallel execution"
 
-
 def chooseParallelGrain(nest: LoopNest) -> int:
     outer_trip = estimateTripCount(nest.loops[0])
     if outer_trip is None or outer_trip <= 0:
@@ -1336,10 +1261,8 @@ def chooseParallelGrain(nest: LoopNest) -> int:
         return 8
     return 16
 
-
 def shouldParallelizeTiledBand(nest: LoopNest) -> bool:
     return tiledParallelDecision(nest)[0]
-
 
 def tiledParallelDecision(nest: LoopNest) -> Tuple[bool, str]:
     tile_depth = prefixLoopDepth(nest, "tile_")
@@ -1354,10 +1277,8 @@ def tiledParallelDecision(nest: LoopNest) -> Tuple[bool, str]:
         return False, "body contains unsupported control or unsafe scalar writes"
     return True, "tiled band follows static OpenMP execution"
 
-
 def shouldParallelizeWavefrontBand(nest: LoopNest) -> bool:
     return wavefrontParallelDecision(nest)[0]
-
 
 def wavefrontParallelDecision(nest: LoopNest) -> Tuple[bool, str]:
     if nest.depth == 0:
@@ -1371,7 +1292,6 @@ def wavefrontParallelDecision(nest: LoopNest) -> Tuple[bool, str]:
     if tile_depth == 0:
         return False, "no tile loops inside wavefront band"
     return True, "wavefront band follows static OpenMP execution"
-
 
 def describeNest(nest: LoopNest, tile_size: int = 32, min_depth: int = 2) -> Dict[str, object]:
     tile_ok, tile_reason = tileDecision(nest, tile_size, min_depth)

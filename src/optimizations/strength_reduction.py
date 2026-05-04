@@ -27,17 +27,14 @@ from src.core import (
 )
 from src.optimizations.base import ASTOptimizationPass
 
-
 def isSmallPosInt(expr: Expression) -> bool:
     return isinstance(expr, IntegerLiteral) and 2 <= expr.value <= 4
-
 
 def expandPower(base: Expression, n: int, line: int, col: int) -> Expression:
     result = base
     for _ in range(n - 1):
         result = BinaryOp(left=result, op="*", right=base, line=line, col=col)
     return result
-
 
 def reduceExpr(expr: Expression, counter: List[int]) -> Expression:
     if isinstance(expr, BinaryOp):
@@ -54,7 +51,6 @@ def reduceExpr(expr: Expression, counter: List[int]) -> Expression:
     if isinstance(expr, ArrayRef):
         return dcReplace(expr, indices=[reduceExpr(i, counter) for i in expr.indices])
     return expr
-
 
 def reduceStmt(stmt: Statement, counter: List[int]) -> Statement:
     if isinstance(stmt, Assignment):
@@ -101,10 +97,8 @@ def reduceStmt(stmt: Statement, counter: List[int]) -> Statement:
         return dcReplace(stmt, args=[reduceExpr(a, counter) for a in stmt.args])
     return stmt
 
-
 def processStmts(stmts: List[Statement], counter: List[int]) -> List[Statement]:
     return [reduceStmt(s, counter) for s in stmts]
-
 
 class StrengthReduction(ASTOptimizationPass):
     name = "StrengthReduction"

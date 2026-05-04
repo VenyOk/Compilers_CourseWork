@@ -9,14 +9,11 @@ from src.optimizations.loop_analysis import buildNest, constantInt, stencilFamil
 from src.optimizations.loop_skewing import isSkewVar
 from src.optimizations.loop_tiling import addExpr, intExpr, isTileVar, subExpr, substituteExpr
 
-
 def wavefrontVarName(index: int) -> str:
     return f"wf_h{index}"
 
-
 def isWavefrontVar(var: str) -> bool:
     return var.startswith("wf_")
-
 
 def tileDepth(nest) -> int:
     depth = 0
@@ -27,10 +24,8 @@ def tileDepth(nest) -> int:
             break
     return depth
 
-
 def hasSkewedPointLoops(nest, depth: int) -> bool:
     return any(isSkewVar(loop_info.var) for loop_info in nest.loops[depth:])
-
 
 def stepsMatch(tile_loops) -> bool:
     if not tile_loops:
@@ -44,7 +39,6 @@ def stepsMatch(tile_loops) -> bool:
             return False
     return True
 
-
 def isWavefrontCandidate(nest) -> bool:
     depth = tileDepth(nest)
     if depth < 2:
@@ -55,17 +49,14 @@ def isWavefrontCandidate(nest) -> bool:
         return False
     return wavefrontDecision(nest)[0]
 
-
 def comparison(left, op: str, right, line: int, col: int) -> BinaryOp:
     return BinaryOp(left=left, op=op, right=right, line=line, col=col)
-
 
 def sumExprs(exprs: List, line: int, col: int):
     total = intExpr(0, line, col)
     for expr in exprs:
         total = addExpr(total, expr, line, col)
     return total
-
 
 def buildHyperBounds(tile_loops) -> tuple:
     line = tile_loops[0].node.line
@@ -83,13 +74,11 @@ def buildHyperBounds(tile_loops) -> tuple:
         upper_parts.append(upper)
     return sumExprs(lower_parts, line, col), sumExprs(upper_parts, line, col)
 
-
 def derivedLastTileValue(hyper_expr, tile_loops, line: int, col: int):
     prefix = [Variable(name=loop_info.var, line=line, col=col) for loop_info in tile_loops[:-1]]
     if not prefix:
         return hyper_expr
     return subExpr(hyper_expr, sumExprs(prefix, line, col), line, col)
-
 
 def wavefrontNest(loop: Statement, counter: List[int]) -> Statement:
     nest = buildNest(loop)
@@ -150,7 +139,6 @@ def wavefrontNest(loop: Statement, counter: List[int]) -> Statement:
         col=col,
     )
 
-
 def tryWavefront(loop: Statement, counter: List[int], diagnostics: List[Dict[str, object]]) -> Statement:
     if not isinstance(loop, (DoLoop, LabeledDoLoop)):
         return loop
@@ -169,7 +157,6 @@ def tryWavefront(loop: Statement, counter: List[int], diagnostics: List[Dict[str
             return transformed
     return dcReplace(loop, body=[tryWavefront(stmt, counter, diagnostics) for stmt in loop.body])
 
-
 def processStmts(stmts: List[Statement], counter: List[int], diagnostics: List[Dict[str, object]]) -> List[Statement]:
     result = []
     for stmt in stmts:
@@ -178,7 +165,6 @@ def processStmts(stmts: List[Statement], counter: List[int], diagnostics: List[D
         else:
             result.append(stmt)
     return result
-
 
 class LoopWavefront(ASTOptimizationPass):
     name = "LoopWavefront"

@@ -6,7 +6,6 @@ from typing import List, Optional, Tuple
 from src.core import ArrayRef, BinaryOp, DoLoop, Expression, FunctionCall, IfStatement, IntegerLiteral, LabeledDoLoop, Program, RealLiteral, SimpleIfStatement, UnaryOp, Variable
 from src.optimizations.base import ASTOptimizationPass
 
-
 def exprKey(expr: Expression) -> str:
     if isinstance(expr, IntegerLiteral):
         return f"i:{expr.value}"
@@ -24,7 +23,6 @@ def exprKey(expr: Expression) -> str:
         return f"a:{expr.name}:" + ",".join(exprKey(index) for index in expr.indices)
     return repr(expr)
 
-
 def intValue(expr: Expression) -> Optional[int]:
     if isinstance(expr, IntegerLiteral):
         return expr.value
@@ -33,7 +31,6 @@ def intValue(expr: Expression) -> Optional[int]:
         if inner is not None:
             return -inner
     return None
-
 
 def realValue(expr: Expression) -> Optional[float]:
     if isinstance(expr, RealLiteral):
@@ -46,22 +43,17 @@ def realValue(expr: Expression) -> Optional[float]:
             return -inner
     return None
 
-
 def makeInt(value: int, expr: Expression) -> IntegerLiteral:
     return IntegerLiteral(value=value, line=expr.line, col=expr.col)
-
 
 def makeReal(value: float, expr: Expression) -> RealLiteral:
     return RealLiteral(value=value, line=expr.line, col=expr.col)
 
-
 def isZero(expr: Expression) -> bool:
     return intValue(expr) == 0 or realValue(expr) == 0.0
 
-
 def isOne(expr: Expression) -> bool:
     return intValue(expr) == 1 or realValue(expr) == 1.0
-
 
 def negate(expr: Expression) -> Expression:
     iv = intValue(expr)
@@ -71,7 +63,6 @@ def negate(expr: Expression) -> Expression:
     if rv is not None:
         return makeReal(-rv, expr)
     return UnaryOp(op="-", operand=expr, line=expr.line, col=expr.col)
-
 
 def flattenAdd(expr: Expression) -> Tuple[List[Expression], float, bool]:
     if isinstance(expr, BinaryOp) and expr.op == "+":
@@ -91,7 +82,6 @@ def flattenAdd(expr: Expression) -> Tuple[List[Expression], float, bool]:
         return [], rv, True
     return [expr], 0.0, False
 
-
 def rebuildAdd(terms: List[Expression], const_value: float, use_real: bool, template: Expression) -> Expression:
     filtered_terms = [term for term in terms if not isZero(term)]
     const_expr: Optional[Expression] = None
@@ -108,7 +98,6 @@ def rebuildAdd(terms: List[Expression], const_value: float, use_real: bool, temp
     for term in filtered_terms[1:]:
         result = BinaryOp(left=result, op="+", right=term, line=template.line, col=template.col)
     return result
-
 
 def simplifyFunction(expr: FunctionCall) -> Expression:
     upper_name = expr.name.upper()
@@ -127,7 +116,6 @@ def simplifyFunction(expr: FunctionCall) -> Expression:
             value = min(left_real, right_real) if upper_name == "MIN" else max(left_real, right_real)
             return makeReal(value, expr)
     return expr
-
 
 def simplifyBinary(expr: BinaryOp) -> Expression:
     left = expr.left
@@ -182,7 +170,6 @@ def simplifyBinary(expr: BinaryOp) -> Expression:
 
     return expr
 
-
 class AffineLinearization(ASTOptimizationPass):
     name = "AffineLinearization"
 
@@ -190,23 +177,23 @@ class AffineLinearization(ASTOptimizationPass):
         super().__init__()
         self.changed = 0
 
-    def _hasTransformedLoops(self, stmts) -> bool:
+    def hasTransformedLoops(self, stmts) -> bool:
         for stmt in stmts:
             if isinstance(stmt, (DoLoop, LabeledDoLoop)):
                 if stmt.var.startswith(("tile_", "skew_", "wf_")):
                     return True
-                if self._hasTransformedLoops(stmt.body):
+                if self.hasTransformedLoops(stmt.body):
                     return True
             elif isinstance(stmt, IfStatement):
-                if self._hasTransformedLoops(stmt.then_body):
+                if self.hasTransformedLoops(stmt.then_body):
                     return True
                 for _, body in stmt.elif_parts:
-                    if self._hasTransformedLoops(body):
+                    if self.hasTransformedLoops(body):
                         return True
-                if stmt.else_body and self._hasTransformedLoops(stmt.else_body):
+                if stmt.else_body and self.hasTransformedLoops(stmt.else_body):
                     return True
             elif isinstance(stmt, SimpleIfStatement):
-                if self._hasTransformedLoops([stmt.statement]):
+                if self.hasTransformedLoops([stmt.statement]):
                     return True
         return False
 
@@ -230,7 +217,7 @@ class AffineLinearization(ASTOptimizationPass):
         return expr
 
     def run(self, program: Program) -> Program:
-        if not self._hasTransformedLoops(program.statements) and not any(self._hasTransformedLoops(subroutine.statements) for subroutine in program.subroutines) and not any(self._hasTransformedLoops(function.statements) for function in program.functions):
+        if not self.hasTransformedLoops(program.statements) and not any(self.hasTransformedLoops(subroutine.statements) for subroutine in program.subroutines) and not any(self.hasTransformedLoops(function.statements) for function in program.functions):
             self.stats = {"linearized": 0}
             return program
         self.changed = 0

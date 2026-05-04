@@ -29,18 +29,14 @@ from src.core import (
 from src.optimizations.base import ASTOptimizationPass
 from src.optimizations.loop_analysis import buildNest, getSkewMatrix, skewDecision, stencilFamily
 
-
 def skewVarName(var: str) -> str:
     return f"skew_{var}"
-
 
 def isSkewVar(var: str) -> bool:
     return var.startswith("skew_")
 
-
 def intExpr(value: int, line: int, col: int) -> IntegerLiteral:
     return IntegerLiteral(value=value, line=line, col=col)
-
 
 def addExpr(left: Expression, right: Expression, line: int, col: int) -> Expression:
     if isinstance(left, IntegerLiteral) and left.value == 0:
@@ -49,12 +45,10 @@ def addExpr(left: Expression, right: Expression, line: int, col: int) -> Express
         return left
     return BinaryOp(left=left, op="+", right=right, line=line, col=col)
 
-
 def subExpr(left: Expression, right: Expression, line: int, col: int) -> Expression:
     if isinstance(right, IntegerLiteral) and right.value == 0:
         return left
     return BinaryOp(left=left, op="-", right=right, line=line, col=col)
-
 
 def mulExprByInt(expr: Expression, factor: int, line: int, col: int) -> Expression:
     if factor == 0:
@@ -62,7 +56,6 @@ def mulExprByInt(expr: Expression, factor: int, line: int, col: int) -> Expressi
     if factor == 1:
         return expr
     return BinaryOp(left=intExpr(factor, line, col), op="*", right=expr, line=line, col=col)
-
 
 def substituteExpr(expr: Expression, substitutions: Dict[str, Expression]) -> Expression:
     if isinstance(expr, Variable) and expr.name in substitutions:
@@ -83,7 +76,6 @@ def substituteExpr(expr: Expression, substitutions: Dict[str, Expression]) -> Ex
     if isinstance(expr, ArrayRef):
         return dcReplace(expr, indices=[substituteExpr(index, substitutions) for index in expr.indices])
     return expr
-
 
 def substituteStmt(stmt: Statement, substitutions: Dict[str, Expression]) -> Statement:
     if isinstance(stmt, Assignment):
@@ -133,7 +125,6 @@ def substituteStmt(stmt: Statement, substitutions: Dict[str, Expression]) -> Sta
         return stmt
     return stmt
 
-
 def buildSubstitutions(nest, matrix: List[List[int]]) -> Dict[str, Expression]:
     substitutions: Dict[str, Expression] = {}
     for index, loop_info in enumerate(nest.loops):
@@ -163,7 +154,6 @@ def buildSubstitutions(nest, matrix: List[List[int]]) -> Dict[str, Expression]:
         substitutions[loop_info.var] = expr
     return substitutions
 
-
 def shiftedBound(expr: Expression, nest, matrix: List[List[int]], index: int) -> Expression:
     line = getattr(expr, "line", 0)
     col = getattr(expr, "col", 0)
@@ -175,7 +165,6 @@ def shiftedBound(expr: Expression, nest, matrix: List[List[int]], index: int) ->
         outer_var = Variable(name=nest.loops[outer_index].var, line=line, col=col)
         shifted = addExpr(shifted, mulExprByInt(outer_var, coeff, line, col), line, col)
     return shifted
-
 
 def skewNest(nest, matrix: List[List[int]]) -> Statement:
     substitutions = buildSubstitutions(nest, matrix)
@@ -202,7 +191,6 @@ def skewNest(nest, matrix: List[List[int]]) -> Statement:
         )]
     return nested_body[0]
 
-
 def trySkew(loop: Statement, counter: List[int], diagnostics: List[Dict[str, object]]) -> Statement:
     if not isinstance(loop, (DoLoop, LabeledDoLoop)):
         return loop
@@ -223,7 +211,6 @@ def trySkew(loop: Statement, counter: List[int], diagnostics: List[Dict[str, obj
             return skewNest(nest, matrix)
     return dcReplace(loop, body=[trySkew(stmt, counter, diagnostics) for stmt in loop.body])
 
-
 def processStmts(stmts: List[Statement], counter: List[int], diagnostics: List[Dict[str, object]]) -> List[Statement]:
     result = []
     for stmt in stmts:
@@ -232,7 +219,6 @@ def processStmts(stmts: List[Statement], counter: List[int], diagnostics: List[D
         else:
             result.append(stmt)
     return result
-
 
 class LoopSkewing(ASTOptimizationPass):
     name = "LoopSkewing"

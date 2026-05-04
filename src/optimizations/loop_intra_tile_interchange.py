@@ -7,7 +7,6 @@ from src.core import DoLoop, LabeledDoLoop, Program, Statement
 from src.optimizations.base import ASTOptimizationPass
 from src.optimizations.loop_analysis import LoopNest, LoopInfo, buildNest, chooseIntraTileLoopOrder, prefixLoopDepth
 
-
 def rebuildNest(nest, tile_depth: int, point_order: List[int]) -> Statement:
     body = nest.body
     for point_index in reversed(point_order):
@@ -17,7 +16,6 @@ def rebuildNest(nest, tile_depth: int, point_order: List[int]) -> Statement:
         loop_info = nest.loops[tile_index]
         body = [dcReplace(loop_info.node, body=body)]
     return body[0]
-
 
 def pointSubNest(nest, tile_depth: int) -> LoopNest:
     loops = [
@@ -31,7 +29,6 @@ def pointSubNest(nest, tile_depth: int) -> LoopNest:
         for loop_info in nest.loops[tile_depth:]
     ]
     return LoopNest(loops=loops, body=nest.body)
-
 
 def tryInterchange(loop: Statement, counter: List[int], diagnostics: List[dict]) -> Statement:
     if not isinstance(loop, (DoLoop, LabeledDoLoop)):
@@ -55,7 +52,6 @@ def tryInterchange(loop: Statement, counter: List[int], diagnostics: List[dict])
         return dcReplace(loop, body=new_body)
     return loop
 
-
 def processStatements(statements: List[Statement], counter: List[int], diagnostics: List[dict]) -> List[Statement]:
     result = []
     for stmt in statements:
@@ -64,7 +60,6 @@ def processStatements(statements: List[Statement], counter: List[int], diagnosti
         else:
             result.append(stmt)
     return result
-
 
 class IntraTileLoopInterchange(ASTOptimizationPass):
     name = "IntraTileLoopInterchange"

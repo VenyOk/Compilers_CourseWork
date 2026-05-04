@@ -6,7 +6,6 @@ from src.core import Program, Statement, DoLoop, LabeledDoLoop
 from src.optimizations.base import ASTOptimizationPass
 from src.optimizations.loop_analysis import canInterchange, buildNest, preferInterchange
 
-
 def interchangeNest(outer: Statement, inner: Statement) -> Statement:
     if not isinstance(inner, (DoLoop, LabeledDoLoop)):
         return outer
@@ -17,7 +16,6 @@ def interchangeNest(outer: Statement, inner: Statement) -> Statement:
     newOuter = dcReplace(inner, start=inner.start, end=inner.end,
                          step=inner.step, body=[newInner])
     return newOuter
-
 
 def tryInterchange(loop: Statement) -> Statement:
     if not isinstance(loop, (DoLoop, LabeledDoLoop)):
@@ -43,7 +41,6 @@ def tryInterchange(loop: Statement) -> Statement:
         return dcReplace(loop, body=newBody)
     return loop
 
-
 def processStmts(stmts: List[Statement], counter: List[int]) -> List[Statement]:
     result = []
     changed = False
@@ -57,7 +54,6 @@ def processStmts(stmts: List[Statement], counter: List[int]) -> List[Statement]:
         else:
             result.append(stmt)
     return result if changed else stmts
-
 
 class LoopInterchange(ASTOptimizationPass):
     name = "LoopInterchange"

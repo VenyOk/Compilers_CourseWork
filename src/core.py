@@ -1,8 +1,6 @@
-import re
 from enum import Enum, auto
 from typing import List, Optional, Any, Tuple, Set
 from dataclasses import dataclass, field
-
 
 class TokenType(Enum):
     INTEGER_LIT = auto()
@@ -88,7 +86,6 @@ class TokenType(Enum):
     COMMENT = auto()
     EOF = auto()
 
-
 @dataclass
 class Token:
     type: TokenType = TokenType.EOF
@@ -98,7 +95,6 @@ class Token:
 
     def __str__(self):
         return f"{self.type.name}({self.value})"
-
 
 class Lexer:
     def __init__(self, text: str):
@@ -546,12 +542,10 @@ class Lexer:
     def get_errors(self) -> List[str]:
         return self.errors
 
-
 @dataclass
 class ASTNode:
     line: int = 0
     col: int = 0
-
 
 @dataclass
 class Program(ASTNode):
@@ -565,7 +559,6 @@ class Program(ASTNode):
     def __str__(self):
         return f"Program({self.name}, {len(self.declarations)} decls, {len(self.statements)} stmts)"
 
-
 @dataclass
 class Subroutine(ASTNode):
     name: str = ""
@@ -575,7 +568,6 @@ class Subroutine(ASTNode):
 
     def __str__(self):
         return f"Subroutine({self.name})"
-
 
 @dataclass
 class FunctionDef(ASTNode):
@@ -588,7 +580,6 @@ class FunctionDef(ASTNode):
     def __str__(self):
         return f"Function({self.name}: {self.return_type})"
 
-
 @dataclass
 class Declaration(ASTNode):
     type: str = ""
@@ -597,17 +588,15 @@ class Declaration(ASTNode):
 
     def __str__(self):
         names_str = ", ".join(
-            f"{name}{_format_dimension_list(dim_ranges)}" if dim_ranges else name
+            f"{name}{format_dimension_list(dim_ranges)}" if dim_ranges else name
             for name, dim_ranges in self.names
         )
         return f"{self.type} {names_str}"
-
 
 @dataclass
 class ImplicitNone(ASTNode):
     def __str__(self):
         return "IMPLICIT NONE"
-
 
 @dataclass
 class ImplicitRule(ASTNode):
@@ -640,7 +629,6 @@ class ImplicitRule(ASTNode):
                     result.add(letter)
         return result
 
-
 @dataclass
 class ImplicitStatement(ASTNode):
     rules: List[ImplicitRule] = field(default_factory=list)
@@ -649,15 +637,13 @@ class ImplicitStatement(ASTNode):
         rules_str = ", ".join(str(rule) for rule in self.rules)
         return f"IMPLICIT {rules_str}"
 
-
 @dataclass
 class DimensionStatement(ASTNode):
     names: List[Tuple[str, List[object]]] = field(default_factory=list)
 
     def __str__(self):
-        names_str = ", ".join(f"{name}{_format_dimension_list(dim_ranges)}" for name, dim_ranges in self.names)
+        names_str = ", ".join(f"{name}{format_dimension_list(dim_ranges)}" for name, dim_ranges in self.names)
         return f"DIMENSION {names_str}"
-
 
 @dataclass
 class ParameterStatement(ASTNode):
@@ -667,11 +653,9 @@ class ParameterStatement(ASTNode):
         params_str = ", ".join(f"{name}={expr}" for name, expr in self.params)
         return f"PARAMETER ({params_str})"
 
-
 @dataclass
 class Statement(ASTNode):
     stmt_label: Optional[str] = None
-
 
 @dataclass
 class DataItem(ASTNode):
@@ -685,7 +669,6 @@ class DataItem(ASTNode):
             return f"{self.name}{indices_str}"
         return self.name
 
-
 @dataclass
 class DataStatement(Statement):
     items: List[Tuple[List[DataItem], List['Expression']]
@@ -698,7 +681,6 @@ class DataStatement(Statement):
         )
         return f"DATA {items_str}"
 
-
 @dataclass
 class Assignment(Statement):
     target: str = ""
@@ -707,7 +689,6 @@ class Assignment(Statement):
 
     def __str__(self):
         return f"Assign({self.target} = ...)"
-
 
 @dataclass
 class DoLoop(Statement):
@@ -719,7 +700,6 @@ class DoLoop(Statement):
 
     def __str__(self):
         return f"DO {self.var} = ... END DO"
-
 
 @dataclass
 class ParallelDoLoop(DoLoop):
@@ -733,7 +713,6 @@ class ParallelDoLoop(DoLoop):
     def __str__(self):
         return f"PARALLEL DO {self.var} = ... END DO"
 
-
 @dataclass
 class DoWhile(Statement):
     condition: 'Expression' = None
@@ -742,7 +721,6 @@ class DoWhile(Statement):
     def __str__(self):
         return f"DO WHILE (...) END DO"
 
-
 @dataclass
 class SimpleIfStatement(Statement):
     condition: 'Expression' = None
@@ -750,7 +728,6 @@ class SimpleIfStatement(Statement):
 
     def __str__(self):
         return f"IF (...) S"
-
 
 @dataclass
 class IfStatement(Statement):
@@ -763,14 +740,12 @@ class IfStatement(Statement):
     def __str__(self):
         return f"IF (...) THEN ... END IF"
 
-
 @dataclass
 class PrintStatement(Statement):
     items: List['Expression'] = field(default_factory=list)
 
     def __str__(self):
         return f"PRINT {len(self.items)} items"
-
 
 @dataclass
 class ReadStatement(Statement):
@@ -781,7 +756,6 @@ class ReadStatement(Statement):
     def __str__(self):
         return f"READ ({self.unit}, {self.format}) {len(self.items)} items"
 
-
 @dataclass
 class WriteStatement(Statement):
     unit: str = ""
@@ -791,7 +765,6 @@ class WriteStatement(Statement):
     def __str__(self):
         return f"WRITE ({self.unit}, {self.format}) {len(self.items)} items"
 
-
 @dataclass
 class CallStatement(Statement):
     name: str = ""
@@ -800,18 +773,15 @@ class CallStatement(Statement):
     def __str__(self):
         return f"CALL {self.name}"
 
-
 @dataclass
 class ReturnStatement(Statement):
     def __str__(self):
         return "RETURN"
 
-
 @dataclass
 class StopStatement(Statement):
     def __str__(self):
         return "STOP"
-
 
 @dataclass
 class GotoStatement(Statement):
@@ -819,7 +789,6 @@ class GotoStatement(Statement):
 
     def __str__(self):
         return f"GOTO {self.label}"
-
 
 @dataclass
 class ContinueStatement(Statement):
@@ -830,14 +799,12 @@ class ContinueStatement(Statement):
             return f"CONTINUE ({self.label})"
         return "CONTINUE"
 
-
 @dataclass
 class ExternalStatement(ASTNode):
     names: List[str] = field(default_factory=list)
 
     def __str__(self):
         return f"EXTERNAL {', '.join(self.names)}"
-
 
 @dataclass
 class CommonStatement(ASTNode):
@@ -852,12 +819,10 @@ class CommonStatement(ASTNode):
                 parts.append(f"{', '.join(str(v) for v in vars)}")
         return f"COMMON {', '.join(parts)}"
 
-
 @dataclass
 class ExitStatement(Statement):
     def __str__(self):
         return "EXIT"
-
 
 @dataclass
 class ArithmeticIfStatement(Statement):
@@ -868,7 +833,6 @@ class ArithmeticIfStatement(Statement):
 
     def __str__(self):
         return f"IF({self.condition}) {self.label_neg}, {self.label_zero}, {self.label_pos}"
-
 
 @dataclass
 class LabeledDoLoop(Statement):
@@ -882,7 +846,6 @@ class LabeledDoLoop(Statement):
     def __str__(self):
         return f"DO {self.label} {self.var} = ... END DO"
 
-
 @dataclass
 class LabeledDoWhile(Statement):
     label: str = ""
@@ -892,11 +855,9 @@ class LabeledDoWhile(Statement):
     def __str__(self):
         return f"DO {self.label} WHILE(...) END DO"
 
-
 @dataclass
 class Expression(ASTNode):
     pass
-
 
 @dataclass
 class BinaryOp(Expression):
@@ -907,7 +868,6 @@ class BinaryOp(Expression):
     def __str__(self):
         return f"({self.op})"
 
-
 @dataclass
 class UnaryOp(Expression):
     op: str = ""
@@ -915,7 +875,6 @@ class UnaryOp(Expression):
 
     def __str__(self):
         return f"({self.op} ...)"
-
 
 @dataclass
 class FunctionCall(Expression):
@@ -925,7 +884,6 @@ class FunctionCall(Expression):
     def __str__(self):
         return f"{self.name}(...)"
 
-
 @dataclass
 class ArrayRef(Expression):
     name: str = ""
@@ -934,14 +892,12 @@ class ArrayRef(Expression):
     def __str__(self):
         return f"{self.name}[...]"
 
-
 @dataclass
 class Variable(Expression):
     name: str = ""
 
     def __str__(self):
         return f"{self.name}"
-
 
 @dataclass
 class IntegerLiteral(Expression):
@@ -950,14 +906,12 @@ class IntegerLiteral(Expression):
     def __str__(self):
         return str(self.value)
 
-
 @dataclass
 class RealLiteral(Expression):
     value: float = 0.0
 
     def __str__(self):
         return str(self.value)
-
 
 @dataclass
 class StringLiteral(Expression):
@@ -966,14 +920,12 @@ class StringLiteral(Expression):
     def __str__(self):
         return repr(self.value)
 
-
 @dataclass
 class LogicalLiteral(Expression):
     value: bool = False
 
     def __str__(self):
         return ".TRUE." if self.value else ".FALSE."
-
 
 @dataclass
 class ComplexLiteral(Expression):
@@ -983,8 +935,7 @@ class ComplexLiteral(Expression):
     def __str__(self):
         return f"({self.real_part}, {self.imag_part})"
 
-
-def _format_dimension_bound(bound: object) -> str:
+def format_dimension_bound(bound: object) -> str:
     if isinstance(bound, int):
         return str(bound)
     if isinstance(bound, IntegerLiteral):
@@ -992,10 +943,10 @@ def _format_dimension_bound(bound: object) -> str:
     if isinstance(bound, Variable):
         return bound.name
     if isinstance(bound, UnaryOp):
-        return f"{bound.op}{_format_dimension_bound(bound.operand)}"
+        return f"{bound.op}{format_dimension_bound(bound.operand)}"
     if isinstance(bound, BinaryOp):
-        left = _format_dimension_bound(bound.left)
-        right = _format_dimension_bound(bound.right)
+        left = format_dimension_bound(bound.left)
+        right = format_dimension_bound(bound.right)
         return f"{left}{bound.op}{right}"
     if isinstance(bound, RealLiteral):
         return str(bound.value)
@@ -1005,21 +956,18 @@ def _format_dimension_bound(bound: object) -> str:
         return repr(bound.value)
     return str(bound)
 
-
-def _format_dimension_spec(dim_spec: object) -> str:
+def format_dimension_spec(dim_spec: object) -> str:
     if isinstance(dim_spec, tuple) and len(dim_spec) == 2:
         lower, upper = dim_spec
-        lower_text = _format_dimension_bound(lower)
-        upper_text = _format_dimension_bound(upper)
+        lower_text = format_dimension_bound(lower)
+        upper_text = format_dimension_bound(upper)
         if lower_text == "1":
             return upper_text
         return f"{lower_text}:{upper_text}"
-    return _format_dimension_bound(dim_spec)
+    return format_dimension_bound(dim_spec)
 
-
-def _format_dimension_list(dim_specs: List[object]) -> str:
-    return "(" + ", ".join(_format_dimension_spec(dim_spec) for dim_spec in dim_specs) + ")"
-
+def format_dimension_list(dim_specs: List[object]) -> str:
+    return "(" + ", ".join(format_dimension_spec(dim_spec) for dim_spec in dim_specs) + ")"
 
 class Parser:
     def __init__(self, tokens: List[Token]):
@@ -2202,7 +2150,6 @@ class Parser:
             f"  {self.current().line}:{self.current().col}: {self.current().value}"
         )
 
-
 def pretty_print_ast(node: ASTNode, indent: int = 0) -> str:
     prefix = "  " * indent
     if isinstance(node, Program):
@@ -2229,7 +2176,7 @@ def pretty_print_ast(node: ASTNode, indent: int = 0) -> str:
     elif isinstance(node, DimensionStatement):
         result = f"{prefix}DIMENSION:\n"
         for name, dim_ranges in node.names:
-            dims_str = _format_dimension_list(dim_ranges)
+            dims_str = format_dimension_list(dim_ranges)
             result += f"{prefix}  {name}{dims_str}\n"
         return result
     elif isinstance(node, ExternalStatement):
@@ -2427,7 +2374,6 @@ def pretty_print_ast(node: ASTNode, indent: int = 0) -> str:
     else:
         return f"{prefix}{node}\n"
 
-
 def main():
     test_code = """
 PROGRAM FACTORIAL
@@ -2451,7 +2397,6 @@ END
     ast = parser.parse()
     print("AST:")
     print(pretty_print_ast(ast))
-
 
 if __name__ == "__main__":
     main()

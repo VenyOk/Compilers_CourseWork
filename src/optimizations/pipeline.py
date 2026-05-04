@@ -14,7 +14,6 @@ from src.optimizations.generated_declarations import GeneratedVariableDeclaratio
 from src.optimizations.loop_parallelization import LoopParallelization
 from src.optimizations.strength_reduction import StrengthReduction
 
-
 def buildPasses(level: int) -> List[Type[ASTOptimizationPass]]:
     if level == 0:
         return []
@@ -44,7 +43,6 @@ def buildPasses(level: int) -> List[Type[ASTOptimizationPass]]:
             GeneratedVariableDeclarations,
         ]
     return []
-
 
 class OptimizationPipeline:
     def __init__(self, level: int = 0):

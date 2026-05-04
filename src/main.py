@@ -5,7 +5,6 @@ from src.semantic import SemanticAnalyzer
 from src.ssa_generator import SSAGenerator
 from src.llvm_generator import LLVMGenerator
 
-
 def analyze_file(file_path: str, ssa_output: str = None, llvm_output: str = None,
                  show_ast: bool = False, opt_level: int = 0) -> int:
     try:
@@ -105,7 +104,6 @@ def analyze_file(file_path: str, ssa_output: str = None, llvm_output: str = None
         traceback.print_exc()
         return 1
 
-
 def main():
     parser = argparse.ArgumentParser(
         description="Анализатор Fortran кода - выводит AST и результаты семантической проверки",
@@ -150,7 +148,6 @@ def main():
         print(
             f"Предупреждение: файл '{args.file}' не имеет расширения .f", file=sys.stderr)
     return analyze_file(args.file, args.ssa_output, args.llvm_output, args.show_ast, args.opt_level)
-
 
 if __name__ == '__main__':
     sys.exit(main())
