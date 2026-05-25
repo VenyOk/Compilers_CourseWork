@@ -4,7 +4,7 @@ from src.frontend.lexer import Token, TokenType
 from src.frontend.ast import (
     ASTNode, Program, Subroutine, FunctionDef, Declaration, ImplicitNone,
     ImplicitRule, ImplicitStatement, DimensionStatement, ParameterStatement,
-    Statement, DataItem, DataStatement, Assignment, DoLoop, ParallelDoLoop,
+    Statement, DataItem, DataStatement, Assignment, DoLoop,
     DoWhile, SimpleIfStatement, IfStatement, PrintStatement, ReadStatement,
     WriteStatement, CallStatement, ReturnStatement, StopStatement, GotoStatement,
     ContinueStatement, ExternalStatement, CommonStatement, ExitStatement,

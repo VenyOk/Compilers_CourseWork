@@ -16,7 +16,7 @@ from src.frontend.ast import (
 from src.optimizations.base import ASTOptimizationPass
 
 GENERATED_NAME_RE = re.compile(
-    r"^(?:cse_tmp_\d+|licm_tmp_\d+|tile_[A-Za-z0-9_]+|skew_[A-Za-z0-9_]+|wf_[A-Za-z0-9_]+)$",
+    r"^(?:cse_tmp_\d+|licm_tmp_\d+|tile_[A-Za-z0-9_]+|skew_[A-Za-z0-9_]+)$",
     re.IGNORECASE,
 )
 
@@ -191,14 +191,14 @@ def addGeneratedDeclarations(declarations: List, statements: List[Statement]) ->
     if not byType:
         return declarations, 0
     newDecls = list(declarations)
-    insertAt = declarationInsertionIndex(newDecls)
     additions: List[Declaration] = []
     for typeName in ["INTEGER", "REAL", "LOGICAL", "COMPLEX", "CHARACTER"]:
         names = byType.get(typeName)
         if not names:
             continue
         additions.append(Declaration(type=typeName, names=[(name, None) for name in sorted(names)], line=0, col=0))
-    updated = newDecls[:insertAt] + additions + newDecls[insertAt:]
+    # Append after user declarations so LLVM emits large array allocas first.
+    updated = newDecls + additions
     count = sum(len(decl.names) for decl in additions)
     return updated, count
 

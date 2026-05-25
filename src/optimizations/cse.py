@@ -72,6 +72,17 @@ def varsInExpr(expr: Expression, result: Set[str]) -> None:
         for a in expr.args:
             varsInExpr(a, result)
 
+def containsArrayRef(expr: Expression) -> bool:
+    if isinstance(expr, ArrayRef):
+        return True
+    if isinstance(expr, BinaryOp):
+        return containsArrayRef(expr.left) or containsArrayRef(expr.right)
+    if isinstance(expr, UnaryOp):
+        return containsArrayRef(expr.operand)
+    if isinstance(expr, FunctionCall):
+        return any(containsArrayRef(arg) for arg in expr.args)
+    return False
+
 class CSEBlock:
     def __init__(self, counter: List[int]):
         self.counter = counter
@@ -91,23 +102,30 @@ class CSEBlock:
         for k in toDelete:
             del self.cache[k]
 
-    def subst(self, expr: Expression) -> Expression:
+    def subst(self, expr: Expression, allow_cache: bool = True) -> Expression:
+        if isinstance(expr, ArrayRef):
+            new_indices = [self.subst(index, allow_cache=False) for index in expr.indices]
+            if any(new_index is not old_index for new_index, old_index in zip(new_indices, expr.indices)):
+                return dcReplace(expr, indices=new_indices)
+            return expr
         if isTrivial(expr) or not isPure(expr):
             return expr
         if isinstance(expr, BinaryOp):
-            nl = self.subst(expr.left)
-            nr = self.subst(expr.right)
+            nl = self.subst(expr.left, allow_cache=allow_cache)
+            nr = self.subst(expr.right, allow_cache=allow_cache)
             if nl is not expr.left or nr is not expr.right:
                 expr = dcReplace(expr, left=nl, right=nr)
         elif isinstance(expr, UnaryOp):
-            no = self.subst(expr.operand)
+            no = self.subst(expr.operand, allow_cache=allow_cache)
             if no is not expr.operand:
                 expr = dcReplace(expr, operand=no)
         elif isinstance(expr, FunctionCall):
-            na = [self.subst(a) for a in expr.args]
+            na = [self.subst(arg, allow_cache=allow_cache) for arg in expr.args]
             if any(x is not y for x, y in zip(na, expr.args)):
                 expr = dcReplace(expr, args=na)
         if isTrivial(expr):
+            return expr
+        if not allow_cache or containsArrayRef(expr):
             return expr
         key = exprKey(expr)
         if key in self.cache:
@@ -142,7 +160,7 @@ class CSEBlock:
                 self.invalidate(stmt.target)
             else:
                 nv = self.subst(stmt.value)
-                ni = [self.subst(i) for i in stmt.indices]
+                ni = [self.subst(index, allow_cache=False) for index in stmt.indices]
                 newStmt = dcReplace(stmt, value=nv, indices=ni)
                 self.invalidate(stmt.target)
         elif isinstance(stmt, PrintStatement):
@@ -179,6 +197,8 @@ def applyCseToStmts(stmts: List[Statement], counter: List[int]) -> List[Statemen
             result.append(stmt)
         else:
             result.extend(block.process(stmt))
+            if isinstance(stmt, Assignment):
+                block.cache.clear()
     return result
 
 class CommonSubexpressionElimination(ASTOptimizationPass):

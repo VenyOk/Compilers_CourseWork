@@ -159,19 +159,6 @@ class DoLoop(Statement):
 
     def __str__(self):
         return f"DO {self.var} = ... END DO"
-
-@dataclass
-class ParallelDoLoop(DoLoop):
-    grain: int = 1
-    threads_hint: int = 0
-    strategy: str = ""
-    backend: str = ""
-    schedule: str = ""
-    private_vars: List[str] = field(default_factory=list)
-
-    def __str__(self):
-        return f"PARALLEL DO {self.var} = ... END DO"
-
 @dataclass
 class DoWhile(Statement):
     condition: 'Expression' = None
@@ -530,7 +517,5 @@ def pretty_print_ast(node: ASTNode, indent: int = 0) -> str:
         return f"{prefix}Complex: ({node.real_part}, {node.imag_part})"
     elif isinstance(node, DataStatement):
         return f"{prefix}DATA: {len(node.items)} items"
-    elif isinstance(node, ParallelDoLoop):
-        return f"{prefix}PARALLEL DO: {node.var} = ... END DO"
     else:
         return f"{prefix}{type(node).__name__}: {node}"

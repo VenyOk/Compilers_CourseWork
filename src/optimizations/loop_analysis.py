@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Dict, List, Optional, Set, Tuple
@@ -413,6 +414,26 @@ def accessStatus(stmts: List[Statement], loop_vars: Set[str]) -> Tuple[bool, boo
         all_affine = all_affine and stmt_affine
     return has_access, all_affine
 
+def hasObservableSideEffects(stmts: List[Statement]) -> bool:
+    for stmt in stmts:
+        if isinstance(stmt, (PrintStatement, WriteStatement, ReadStatement, CallStatement, ReturnStatement, StopStatement, GotoStatement, ArithmeticIfStatement)):
+            return True
+        if isinstance(stmt, (DoLoop, LabeledDoLoop, DoWhile, LabeledDoWhile)):
+            if hasObservableSideEffects(stmt.body):
+                return True
+        elif isinstance(stmt, IfStatement):
+            if hasObservableSideEffects(stmt.then_body):
+                return True
+            for _, body in stmt.elif_parts:
+                if hasObservableSideEffects(body):
+                    return True
+            if stmt.else_body and hasObservableSideEffects(stmt.else_body):
+                return True
+        elif isinstance(stmt, SimpleIfStatement):
+            if hasObservableSideEffects([stmt.statement]):
+                return True
+    return False
+
 def coefficientMatrix(access: ArrayAccess, loop_vars: List[str]) -> List[List[int]]:
     return [[index.coeff(var) for var in loop_vars] for index in access.indices]
 
@@ -516,8 +537,8 @@ def computeDependenceVectors(nest: LoopNest) -> List[DependenceVector]:
                 continue
             seen.add(key)
             dependencies.append(dep)
-    prefix_depth = stateCarriedPrefixDepth(nest)
-    if prefix_depth == 1:
+    prefix_depth = effectiveStateCarriedPrefixDepth(nest)
+    if prefix_depth > 0:
         self_arrays = selfDependentArrays(nest)
         extra_dependencies: List[DependenceVector] = []
         for dep in dependencies:
@@ -601,7 +622,7 @@ def hasArrayAccesses(nest: LoopNest) -> bool:
     return has_access
 
 def isGeneratedLoopVar(var: str) -> bool:
-    return var.startswith(("tile_", "skew_", "wf_"))
+    return var.startswith(("tile_", "skew_"))
 
 def baseActiveLoopVars(nest: LoopNest) -> Set[str]:
     active: Set[str] = set()
@@ -789,44 +810,22 @@ def referencedLoopVars(expr: Expression, loop_vars: Set[str]) -> Set[str]:
 def chooseIntraTileLoopOrder(nest: LoopNest) -> List[int]:
     if nest.depth <= 1:
         return list(range(nest.depth))
-    accesses = collectAccesses(nest.body, set(nest.vars))
     prefix_depth = effectiveStateCarriedPrefixDepth(nest)
-    suffix = list(range(prefix_depth, nest.depth))
-    if len(suffix) <= 1:
+    spatial_depth = nest.depth - prefix_depth
+    if spatial_depth <= 1:
         return list(range(nest.depth))
-    dependency_map: Dict[int, Set[str]] = {}
-    for index in suffix:
-        deps = referencedLoopVars(nest.loops[index].start, set(nest.vars))
-        deps.update(referencedLoopVars(nest.loops[index].end, set(nest.vars)))
-        deps.discard(nest.loops[index].var)
-        dependency_map[index] = deps
-    scores: Dict[int, int] = {}
-    for index in suffix:
-        var = nest.loops[index].var
-        reuse = axisDependenceScore(nest, var)
-        locality = localityScore(accesses, var)
-        trip_count = estimateTripCount(nest.loops[index]) or 0
-        family = stencilFamily(nest)
-        if family in {"dirichlet_gs", "gauss_seidel", "single_array_stencil", "stencil"}:
-            scores[index] = (reuse * 1000) + (locality * 10) + min(trip_count, 128)
-        else:
-            scores[index] = (locality * 100) + min(trip_count, 128)
-    ordered = list(range(prefix_depth))
-    chosen_vars = {nest.loops[index].var for index in ordered}
-    remaining = list(suffix)
-    while remaining:
-        ready = [index for index in remaining if dependency_map[index].issubset(chosen_vars)]
-        if not ready:
-            return list(range(nest.depth))
-        ready.sort(key=lambda index: scores[index])
-        chosen = ready[0]
-        ordered.append(chosen)
-        chosen_vars.add(nest.loops[chosen].var)
-        remaining.remove(chosen)
-    return ordered
+    if articleModeEnabled():
+        from src.optimizations.article_core import articlePointOrder
+
+        return articlePointOrder(prefix_depth, spatial_depth)
+    innermost = nest.depth - 1
+    middle = list(range(prefix_depth, nest.depth - 1))
+    return list(range(prefix_depth)) + [innermost] + middle
 
 def preferInterchange(nest: LoopNest) -> bool:
     if nest.depth < 2 or not isAffineNest(nest):
+        return False
+    if hasObservableSideEffects(nest.body):
         return False
     has_access, all_affine = accessStatus(nest.body, set(nest.vars))
     if not has_access or not all_affine:
@@ -855,6 +854,8 @@ def preferInterchange(nest: LoopNest) -> bool:
 def canInterchange(nest: LoopNest) -> bool:
     if nest.depth < 2 or not isAffineNest(nest):
         return False
+    if hasObservableSideEffects(nest.body):
+        return False
     _, all_affine = accessStatus(nest.body, set(nest.vars))
     if not all_affine:
         return False
@@ -868,6 +869,8 @@ def tileDecision(nest: LoopNest, tile_size: int, min_depth: int) -> Tuple[bool, 
         return False, "depth below tiling threshold"
     if not isAffineNest(nest):
         return False, "non-affine nest"
+    if hasObservableSideEffects(nest.body):
+        return False, "observable side effects in loop body"
     has_access, all_affine = accessStatus(nest.body, set(nest.vars))
     if not has_access or not all_affine:
         return False, "body is not affine-access dominated"
@@ -893,12 +896,21 @@ def dependenceBandDepth(nest: LoopNest) -> int:
 def needsSkewing(nest: LoopNest) -> bool:
     if nest.depth < 2 or not isAffineNest(nest):
         return False
+    if hasObservableSideEffects(nest.body):
+        return False
     _, all_affine = accessStatus(nest.body, set(nest.vars))
     if not all_affine:
         return False
     if len(activeLoopVars(nest)) != nest.depth:
         return False
-    return dependenceBandDepth(nest) > 1
+    prefix_depth = effectiveStateCarriedPrefixDepth(nest)
+    for dep in computeDependenceVectors(nest):
+        for index, distance in enumerate(dep.distances):
+            if index < prefix_depth:
+                continue
+            if distance is not None and distance < 0:
+                return True
+    return False
 
 def skewDecision(nest: LoopNest) -> Tuple[bool, str]:
     if not needsSkewing(nest):
@@ -912,17 +924,22 @@ def shouldSkewNest(nest: LoopNest) -> bool:
     return skewDecision(nest)[0]
 
 def getSkewMatrix(nest: LoopNest) -> List[List[int]]:
+    if articleModeEnabled():
+        from src.optimizations.article_core import articleSkewMatrix
+
+        return articleSkewMatrix(nest, needsSkewing(nest))
     matrix = [[0 for _ in range(nest.depth)] for _ in range(nest.depth)]
     if not needsSkewing(nest):
         return matrix
     for dep in computeDependenceVectors(nest):
-        for inner_index, distance in enumerate(dep.distances):
+        for index, distance in enumerate(dep.distances):
             if distance is None or distance >= 0:
                 continue
-            for outer_index in dep.carriers:
-                if outer_index >= inner_index:
-                    continue
-                matrix[inner_index][outer_index] = max(matrix[inner_index][outer_index], abs(distance))
+            factor = abs(distance)
+            for outer_index in range(index):
+                matrix[index][outer_index] = max(matrix[index][outer_index], factor)
+            for inner_index in range(index + 1, nest.depth):
+                matrix[inner_index][index] = max(matrix[inner_index][index], factor)
     return matrix
 
 def getSkewFactors(nest: LoopNest) -> List[int]:
@@ -954,9 +971,175 @@ def prefixLoopDepth(nest: LoopNest, prefix: str) -> int:
             break
     return depth
 
+def isTileLoopVar(var: str) -> bool:
+    return var.startswith("tile_")
+
+def temporalPrefixDepth(nest: LoopNest) -> int:
+    return effectiveStateCarriedPrefixDepth(nest)
+
+def isIterativeTypeNest(nest: LoopNest) -> bool:
+    if nest.depth < 3 or not isAffineNest(nest):
+        return False
+    if not selfDependentArrays(nest):
+        return False
+    has_access, all_affine = accessStatus(nest.body, set(nest.vars))
+    if not has_access or not all_affine:
+        return False
+    if articleModeEnabled():
+        from src.optimizations.article_core import isCanonicalIterativeNest
+
+        if isCanonicalIterativeNest(nest):
+            return True
+    family = stencilFamily(nest)
+    if family in {"gauss_seidel", "dirichlet_gs"}:
+        return True
+    prefix_depth = effectiveStateCarriedPrefixDepth(nest)
+    if prefix_depth <= 0:
+        return False
+    base_active = baseActiveLoopVars(nest)
+    for loop_info in nest.loops[:prefix_depth]:
+        if loop_info.var in base_active:
+            return False
+    return True
+
+def tileBandStart(nest: LoopNest) -> int:
+    return 0 if isIterativeTypeNest(nest) else temporalPrefixDepth(nest)
+
+def sideSliceBandStart(nest: LoopNest) -> int:
+    tile_start, tile_count = tileBandSpan(nest)
+    if tile_count > 0:
+        point_start = tile_start + tile_count
+        active = baseActiveLoopVars(nest)
+        for index in range(point_start, nest.depth):
+            loop_info = nest.loops[index]
+            if loop_info.var in active or loop_info.var.startswith("skew_"):
+                return index
+        return point_start
+    if isIterativeTypeNest(nest):
+        return temporalPrefixDepth(nest)
+    return tileBandStart(nest)
+
+def tileBandSpan(nest: LoopNest) -> Tuple[int, int]:
+    start: Optional[int] = None
+    for index, loop_info in enumerate(nest.loops):
+        if isTileLoopVar(loop_info.var):
+            if start is None:
+                start = index
+        elif start is not None:
+            break
+    if start is None:
+        return 0, 0
+    count = 0
+    for loop_info in nest.loops[start:]:
+        if isTileLoopVar(loop_info.var):
+            count += 1
+        else:
+            break
+    return start, count
+
+def pointBandSpan(nest: LoopNest) -> Tuple[int, int]:
+    tile_start, tile_count = tileBandSpan(nest)
+    if tile_count > 0:
+        point_start = tile_start + tile_count
+        return point_start, nest.depth - point_start
+    prefix = temporalPrefixDepth(nest)
+    return prefix, nest.depth - prefix
+
+def articleOptimalTileSide(
+    l1_bytes: int = 32 * 1024,
+    elem_size: int = 8,
+    spatial_dims: int = 2,
+    n_arrays: int = 1,
+) -> int:
+    budget = max(l1_bytes // (max(n_arrays, 1) * elem_size), 16)
+    if spatial_dims <= 1:
+        return max(2, int(math.sqrt(budget + 1)) - 1)
+    if spatial_dims == 2:
+        return max(2, int(math.sqrt(budget + 4)) - 2)
+    return max(2, int(round((budget + 8) ** (1.0 / spatial_dims) - 2)))
+
+def postSkewDependencesLegal(nest: LoopNest) -> bool:
+    if not needsSkewing(nest):
+        return True
+    return all(dep.allNonNegative() for dep in computeDependenceVectors(nest))
+
+def transformedDependencesLegal(nest: LoopNest, matrix: List[List[int]]) -> bool:
+    if nest.depth == 0 or len(matrix) != nest.depth:
+        return False
+    for row in matrix:
+        if len(row) != nest.depth:
+            return False
+    for dep in computeDependenceVectors(nest):
+        transformed: List[Optional[int]] = []
+        for row_index, distance in enumerate(dep.distances):
+            value = distance
+            if value is None:
+                transformed.append(None)
+                continue
+            for col_index in range(row_index):
+                coeff = matrix[row_index][col_index]
+                if coeff == 0:
+                    continue
+                outer_distance = dep.distances[col_index]
+                if outer_distance is None:
+                    value = None
+                    break
+                value += coeff * outer_distance
+            transformed.append(value)
+        if any(distance is not None and distance < 0 for distance in transformed):
+            return False
+    return True
+
+def canInterchangePointOrder(nest: LoopNest, point_start: int, point_order: List[int]) -> bool:
+    point_depth = len(point_order)
+    if point_order == list(range(point_depth)):
+        return False
+    point_vars = [loop_info.var for loop_info in nest.loops[point_start:point_start + point_depth]]
+    if (
+        len(point_vars) == 2
+        and all(var.startswith("skew_") for var in point_vars)
+    ):
+        from src.optimizations.side_slice import sideSlicePointInfos
+
+        point_infos = [
+            (loop_info.var, loop_info.start, loop_info.end, loop_info.step)
+            for loop_info in nest.loops[point_start:point_start + point_depth]
+        ]
+        line = nest.loops[point_start].node.line
+        col = nest.loops[point_start].node.col
+        return sideSlicePointInfos(point_infos, point_order, set(nest.vars), line, col) is not None
+    dependencies = computeDependenceVectors(nest)
+    if not dependencies:
+        return False
+    for dep in dependencies:
+        distances = dep.distances
+        if len(distances) < point_start + point_depth:
+            continue
+        spatial = distances[point_start:point_start + point_depth]
+        permuted = [spatial[index] for index in point_order]
+        new_distances = list(distances[:point_start]) + permuted + list(distances[point_start + point_depth:])
+        if any(distance is not None and distance < 0 for distance in new_distances):
+            return False
+    return True
+
+def shouldApplySideSliceInterchange(nest: LoopNest, point_start: int) -> bool:
+    _, point_depth = pointBandSpan(nest)
+    if point_depth < 2:
+        return False
+    point_loops = nest.loops[point_start:point_start + point_depth]
+    if all(loop_info.var.startswith("skew_") for loop_info in point_loops):
+        return stencilFamily(nest) in {
+            "gauss_seidel",
+            "dirichlet_gs",
+            "coefficient_stencil",
+            "single_array_stencil",
+            "stencil",
+        }
+    return True
+
 def pointSkewDepth(nest: LoopNest) -> int:
-    tile_depth = prefixLoopDepth(nest, "tile_")
-    return sum(1 for loop_info in nest.loops[tile_depth:] if loop_info.var.startswith("skew_"))
+    point_start, point_depth = pointBandSpan(nest)
+    return sum(1 for loop_info in nest.loops[point_start:point_start + point_depth] if loop_info.var.startswith("skew_"))
 
 def estimatePrefixVolume(nest: LoopNest, depth: int) -> Optional[int]:
     if depth <= 0:
@@ -970,15 +1153,16 @@ def estimatePrefixVolume(nest: LoopNest, depth: int) -> Optional[int]:
     return volume
 
 def estimateTileFootprint(nest: LoopNest) -> Optional[int]:
-    tile_depth = prefixLoopDepth(nest, "tile_")
+    tile_start, tile_depth = tileBandSpan(nest)
     if tile_depth == 0:
         return None
-    if nest.depth <= tile_depth:
+    point_start = tile_start + tile_depth
+    if nest.depth <= point_start:
         return None
     footprint = 1
     known = False
     for index in range(tile_depth):
-        point_index = tile_depth + index
+        point_index = point_start + index
         if point_index >= nest.depth:
             break
         tile_step = constantInt(nest.loops[index].step)
@@ -1002,296 +1186,6 @@ def estimateTransformedWorkingSet(nest: LoopNest, bytes_per_element: int = 8) ->
         return unique_arrays * tile_footprint * bytes_per_element
     return estimateWorkingSet(nest, bytes_per_element=bytes_per_element)
 
-def containsUnsupportedParallelControl(stmts: List[Statement]) -> bool:
-    for stmt in stmts:
-        if isinstance(stmt, (ReadStatement, WriteStatement, PrintStatement, CallStatement, ReturnStatement, StopStatement, ContinueStatement, GotoStatement, ArithmeticIfStatement, DoWhile, LabeledDoWhile, ExitStatement)):
-            return True
-        if isinstance(stmt, (DoLoop, LabeledDoLoop)):
-            if containsUnsupportedParallelControl(stmt.body):
-                return True
-            continue
-        if isinstance(stmt, IfStatement):
-            if containsUnsupportedParallelControl(stmt.then_body):
-                return True
-            for _, body in stmt.elif_parts:
-                if containsUnsupportedParallelControl(body):
-                    return True
-            if stmt.else_body and containsUnsupportedParallelControl(stmt.else_body):
-                return True
-            continue
-        if isinstance(stmt, SimpleIfStatement):
-            if containsUnsupportedParallelControl([stmt.statement]):
-                return True
-    return False
-
-def collectRegionLoopVars(stmts: List[Statement]) -> Set[str]:
-    result: Set[str] = set()
-    for stmt in stmts:
-        if isinstance(stmt, (DoLoop, LabeledDoLoop)):
-            result.add(stmt.var)
-            result.update(collectRegionLoopVars(stmt.body))
-        elif isinstance(stmt, IfStatement):
-            result.update(collectRegionLoopVars(stmt.then_body))
-            for _, body in stmt.elif_parts:
-                result.update(collectRegionLoopVars(body))
-            if stmt.else_body:
-                result.update(collectRegionLoopVars(stmt.else_body))
-        elif isinstance(stmt, SimpleIfStatement):
-            result.update(collectRegionLoopVars([stmt.statement]))
-    return result
-
-def isPrivatizableScalarName(name: str) -> bool:
-    return name.startswith(("cse_tmp_", "licm_tmp_", "tile_", "skew_", "wf_"))
-
-def exprReadsVariable(expr: Expression, name: str) -> bool:
-    if isinstance(expr, Variable):
-        return expr.name == name
-    if isinstance(expr, ArrayRef):
-        return any(exprReadsVariable(index, name) for index in expr.indices)
-    if isinstance(expr, BinaryOp):
-        return exprReadsVariable(expr.left, name) or exprReadsVariable(expr.right, name)
-    if isinstance(expr, UnaryOp):
-        return exprReadsVariable(expr.operand, name)
-    if isinstance(expr, FunctionCall):
-        return any(exprReadsVariable(arg, name) for arg in expr.args)
-    return False
-
-def scalarAssignmentCount(stmts: List[Statement], name: str) -> int:
-    count = 0
-    for stmt in stmts:
-        if isinstance(stmt, Assignment):
-            if not stmt.indices and stmt.target == name:
-                count += 1
-            continue
-        if isinstance(stmt, (DoLoop, LabeledDoLoop)):
-            count += scalarAssignmentCount(stmt.body, name)
-            continue
-        if isinstance(stmt, IfStatement):
-            count += scalarAssignmentCount(stmt.then_body, name)
-            for _, body in stmt.elif_parts:
-                count += scalarAssignmentCount(body, name)
-            if stmt.else_body:
-                count += scalarAssignmentCount(stmt.else_body, name)
-            continue
-        if isinstance(stmt, SimpleIfStatement):
-            count += scalarAssignmentCount([stmt.statement], name)
-    return count
-
-def readBeforeAssignStatus(stmts: List[Statement], name: str, assigned: bool = False) -> Tuple[bool, bool]:
-    current_assigned = assigned
-    for stmt in stmts:
-        if isinstance(stmt, Assignment):
-            reads_name = any(exprReadsVariable(index, name) for index in stmt.indices) or exprReadsVariable(stmt.value, name)
-            if reads_name and not current_assigned:
-                return False, current_assigned
-            if not stmt.indices and stmt.target == name:
-                current_assigned = True
-            continue
-        if isinstance(stmt, (DoLoop, LabeledDoLoop)):
-            loop_safe, _ = readBeforeAssignStatus(stmt.body, name, False)
-            if not loop_safe:
-                return False, current_assigned
-            continue
-        if isinstance(stmt, IfStatement):
-            if exprReadsVariable(stmt.condition, name) and not current_assigned:
-                return False, current_assigned
-            then_safe, then_assigned = readBeforeAssignStatus(stmt.then_body, name, current_assigned)
-            if not then_safe:
-                return False, current_assigned
-            branch_assigned = []
-            for condition, body in stmt.elif_parts:
-                if exprReadsVariable(condition, name) and not current_assigned:
-                    return False, current_assigned
-                branch_safe, branch_after = readBeforeAssignStatus(body, name, current_assigned)
-                if not branch_safe:
-                    return False, current_assigned
-                branch_assigned.append(branch_after)
-            if stmt.else_body is not None:
-                else_safe, else_assigned = readBeforeAssignStatus(stmt.else_body, name, current_assigned)
-                if not else_safe:
-                    return False, current_assigned
-                branch_assigned.append(else_assigned)
-            current_assigned = current_assigned or (then_assigned and all(branch_assigned) if branch_assigned else then_assigned)
-            continue
-        if isinstance(stmt, SimpleIfStatement):
-            if exprReadsVariable(stmt.condition, name) and not current_assigned:
-                return False, current_assigned
-            nested_safe, nested_assigned = readBeforeAssignStatus([stmt.statement], name, current_assigned)
-            if not nested_safe:
-                return False, current_assigned
-            current_assigned = current_assigned or nested_assigned
-    return True, current_assigned
-
-def canPrivatizeUserScalar(stmts: List[Statement], name: str) -> bool:
-    if scalarAssignmentCount(stmts, name) < 2:
-        return False
-    safe, assigned = readBeforeAssignStatus(stmts, name, False)
-    return safe and assigned
-
-def collectPrivatizableScalars(stmts: List[Statement], private_vars: Set[str]) -> Set[str]:
-    result: Set[str] = set()
-    for stmt in stmts:
-        if isinstance(stmt, Assignment):
-            if not stmt.indices and (stmt.target in private_vars or isPrivatizableScalarName(stmt.target) or canPrivatizeUserScalar(stmts, stmt.target)):
-                result.add(stmt.target)
-            continue
-        if isinstance(stmt, (DoLoop, LabeledDoLoop)):
-            nested_private = set(private_vars)
-            nested_private.add(stmt.var)
-            result.update(collectPrivatizableScalars(stmt.body, nested_private))
-            continue
-        if isinstance(stmt, IfStatement):
-            result.update(collectPrivatizableScalars(stmt.then_body, private_vars))
-            for _, body in stmt.elif_parts:
-                result.update(collectPrivatizableScalars(body, private_vars))
-            if stmt.else_body:
-                result.update(collectPrivatizableScalars(stmt.else_body, private_vars))
-            continue
-        if isinstance(stmt, SimpleIfStatement):
-            result.update(collectPrivatizableScalars([stmt.statement], private_vars))
-    return result
-
-def hasUnsafeScalarWrites(stmts: List[Statement], private_vars: Set[str]) -> bool:
-    for stmt in stmts:
-        if isinstance(stmt, Assignment):
-            if not stmt.indices and stmt.target not in private_vars and not isPrivatizableScalarName(stmt.target):
-                return True
-            continue
-        if isinstance(stmt, (DoLoop, LabeledDoLoop)):
-            nested_private = set(private_vars)
-            nested_private.add(stmt.var)
-            if hasUnsafeScalarWrites(stmt.body, nested_private):
-                return True
-            continue
-        if isinstance(stmt, IfStatement):
-            if hasUnsafeScalarWrites(stmt.then_body, private_vars):
-                return True
-            for _, body in stmt.elif_parts:
-                if hasUnsafeScalarWrites(body, private_vars):
-                    return True
-            if stmt.else_body and hasUnsafeScalarWrites(stmt.else_body, private_vars):
-                return True
-            continue
-        if isinstance(stmt, SimpleIfStatement):
-            if hasUnsafeScalarWrites([stmt.statement], private_vars):
-                return True
-    return False
-
-def isSafeParallelBody(stmts: List[Statement], private_vars: Set[str]) -> bool:
-    if containsUnsupportedParallelControl(stmts):
-        return False
-    effective_private = set(private_vars)
-    effective_private.update(collectPrivatizableScalars(stmts, effective_private))
-    if hasUnsafeScalarWrites(stmts, effective_private):
-        return False
-    return True
-
-def shouldWavefrontNest(nest: LoopNest) -> bool:
-    return wavefrontDecision(nest)[0]
-
-def wavefrontDecision(nest: LoopNest) -> Tuple[bool, str]:
-    tile_depth = prefixLoopDepth(nest, "tile_")
-    if tile_depth < 2:
-        return False, "tile band is too small for hyperplane traversal"
-    if not hasArrayAccesses(nest):
-        return False, "no array accesses in transformed band"
-    if countArrayAccesses(nest) < 2:
-        return False, "too few accesses for wavefront traversal"
-    has_skewed_points = any(loop_info.var.startswith("skew_") for loop_info in nest.loops[tile_depth:])
-    if has_skewed_points:
-        return True, "skewed tiled band follows article hyperplane traversal"
-    if isSimpleSingleArrayStencil(nest):
-        return True, "single-array stencil follows hyperplane traversal"
-    return False, "wavefront is reserved for skewed iterative bands or single-array stencils"
-
-def shouldParallelizeIndependentNest(nest: LoopNest) -> bool:
-    return independentParallelDecision(nest)[0]
-
-def independentParallelDecision(nest: LoopNest) -> Tuple[bool, str]:
-    if nest.depth == 0 or not isAffineNest(nest):
-        return False, "non-affine nest"
-    if not hasArrayAccesses(nest):
-        return False, "no array accesses"
-    if effectiveStateCarriedPrefixDepth(nest) > 0 and selfDependentArrays(nest):
-        return False, "state-carrying outer prefix stays sequential"
-    if nest.loops[0].var not in activeLoopVars(nest):
-        return False, "outer loop does not carry useful parallel work"
-    dependencies = computeDependenceVectors(nest)
-    if any(dep.carrier == 0 for dep in dependencies):
-        return False, "outer loop carries a dependence"
-    outer_trip = estimateTripCount(nest.loops[0])
-    if outer_trip is not None and outer_trip < 4:
-        return False, "outer trip count is too small"
-    volume = estimateNestVolume(nest, limit_depth=min(3, nest.depth))
-    if volume is not None and volume < 8192:
-        return False, "nest volume is too small"
-    if countArrayAccesses(nest) <= 2 and volume is not None and volume < 24576:
-        return False, "fill-like loop is too small for parallel launch"
-    working_set = estimateWorkingSet(nest)
-    if working_set is not None and working_set < 8 * 1024:
-        return False, "working set is too small"
-    private_vars = collectRegionLoopVars(nest.body) | {nest.loops[0].var}
-    if not isSafeParallelBody(nest.body, private_vars):
-        return False, "body contains unsupported control or unsafe scalar writes"
-    return True, "independent loop band is profitable for parallel execution"
-
-def chooseParallelGrain(nest: LoopNest) -> int:
-    outer_trip = estimateTripCount(nest.loops[0])
-    if outer_trip is None or outer_trip <= 0:
-        return 1
-    tile_depth = prefixLoopDepth(nest, "tile_")
-    tile_footprint = estimateTileFootprint(nest)
-    if tile_footprint is not None:
-        work_per_iter = max(1, tile_footprint * max(1, countArrayAccesses(nest)))
-    else:
-        volume = estimatePrefixVolume(nest, tile_depth) if tile_depth > 0 else estimateNestVolume(nest, limit_depth=min(3, nest.depth))
-        if volume is None:
-            work_per_iter = max(32, countArrayAccesses(nest) * 8)
-        else:
-            work_per_iter = max(1, volume // max(outer_trip, 1))
-    if tile_depth >= 3 and countArrayAccesses(nest) >= 5:
-        work_per_iter = max(work_per_iter, 1024)
-    if work_per_iter >= 4096:
-        return 1
-    if work_per_iter >= 1024:
-        return 2
-    if work_per_iter >= 256:
-        return 4
-    if work_per_iter >= 64:
-        return 8
-    return 16
-
-def shouldParallelizeTiledBand(nest: LoopNest) -> bool:
-    return tiledParallelDecision(nest)[0]
-
-def tiledParallelDecision(nest: LoopNest) -> Tuple[bool, str]:
-    tile_depth = prefixLoopDepth(nest, "tile_")
-    if tile_depth == 0:
-        return False, "no tile loops to parallelize"
-    if not hasArrayAccesses(nest):
-        return False, "no array accesses"
-    if any(var.startswith("skew_") for var in nest.vars):
-        return False, "skewed point loops use wavefront-specific parallel path"
-    private_vars = collectRegionLoopVars(nest.body) | {nest.loops[0].var}
-    if not isSafeParallelBody(nest.body, private_vars):
-        return False, "body contains unsupported control or unsafe scalar writes"
-    return True, "tiled band follows static OpenMP execution"
-
-def shouldParallelizeWavefrontBand(nest: LoopNest) -> bool:
-    return wavefrontParallelDecision(nest)[0]
-
-def wavefrontParallelDecision(nest: LoopNest) -> Tuple[bool, str]:
-    if nest.depth == 0:
-        return False, "empty nest"
-    tile_depth = prefixLoopDepth(nest, "tile_")
-    private_vars = collectRegionLoopVars(nest.body) | {nest.loops[0].var}
-    if not isSafeParallelBody(nest.body, private_vars):
-        return False, "body contains unsupported control or unsafe scalar writes"
-    if stencilFamily(nest) == "dirichlet_gs":
-        return True, "article wavefront exposes tile-level parallelism"
-    if tile_depth == 0:
-        return False, "no tile loops inside wavefront band"
-    return True, "wavefront band follows static OpenMP execution"
 
 def describeNest(nest: LoopNest, tile_size: int = 32, min_depth: int = 2) -> Dict[str, object]:
     tile_ok, tile_reason = tileDecision(nest, tile_size, min_depth)

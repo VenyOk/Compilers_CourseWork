@@ -7,9 +7,11 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.core import Lexer, Parser
-from src.semantic import SemanticAnalyzer
-from src.llvm_generator import LLVMGenerator
+from src.frontend.lexer import Lexer
+from src.frontend.parser import Parser
+from src.semantic.analyzer import SemanticAnalyzer
+from src.ir.llvm import LLVMGenerator
+from src.optimizations.pipeline import OptimizationPipeline
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -26,6 +28,24 @@ def compile_to_llvm(source: str) -> str:
     semantic = SemanticAnalyzer()
     if not semantic.analyze(ast):
         raise AssertionError(f"Semantic errors: {semantic.get_errors()}")
+    llvm_gen = LLVMGenerator()
+    return llvm_gen.generate(ast)
+
+
+def compile_to_llvm_optimized(source: str, level: int = 3) -> str:
+    lexer = Lexer(source)
+    tokens = lexer.tokenize()
+    if lexer.get_errors():
+        raise AssertionError(f"Lexer errors: {lexer.get_errors()}")
+    parser = Parser(tokens)
+    ast = parser.parse()
+    semantic = SemanticAnalyzer()
+    if not semantic.analyze(ast):
+        raise AssertionError(f"Semantic errors: {semantic.get_errors()}")
+    ast = OptimizationPipeline(level=level).run(ast)
+    semantic_after = SemanticAnalyzer()
+    if not semantic_after.analyze(ast):
+        raise AssertionError(f"Semantic errors after optimization: {semantic_after.get_errors()}")
     llvm_gen = LLVMGenerator()
     return llvm_gen.generate(ast)
 
@@ -109,6 +129,40 @@ class TestStrassenRuntime(unittest.TestCase):
         source = replace_n(STRASSEN_PATH.read_text(encoding="utf-8"), 64)
         llvm_code = compile_to_llvm(source)
         output = run_llvm_ir(llvm_code, timeout=30)
+        n_val, checksum, c11, cnn = parse_summary(output)
+        expected = matmul(gen_matrix(64, 12345), gen_matrix(64, 13345))
+        expected_sum = sum(sum(row) for row in expected)
+        self.assertEqual(n_val, 64)
+        self.assertAlmostEqual(checksum, expected_sum, places=3)
+        self.assertAlmostEqual(c11, expected[0][0], places=4)
+        self.assertAlmostEqual(cnn, expected[-1][-1], places=4)
+
+    def test_blocked_128_checksum_parses_without_print_rounding(self):
+        source = replace_n(STRASSEN_PATH.read_text(encoding="utf-8"), 128)
+        llvm_code = compile_to_llvm(source)
+        output = run_llvm_ir(llvm_code, timeout=60)
+        n_val, checksum, c11, cnn = parse_summary(output)
+        expected = matmul(gen_matrix(128, 12345), gen_matrix(128, 13345))
+        expected_sum = sum(sum(row) for row in expected)
+        self.assertEqual(n_val, 128)
+        self.assertAlmostEqual(checksum, expected_sum, places=3)
+        self.assertAlmostEqual(c11, expected[0][0], places=4)
+        self.assertAlmostEqual(cnn, expected[-1][-1], places=4)
+
+    def test_o3_small_strassen_path_matches_exact_matrix(self):
+        source = replace_n(STRASSEN_PATH.read_text(encoding="utf-8"), 4)
+        llvm_code = compile_to_llvm_optimized(source, level=3)
+        output = run_llvm_ir(llvm_code, timeout=20)
+        actual = parse_result_matrix(output, 4)
+        expected = matmul(gen_matrix(4, 12345), gen_matrix(4, 13345))
+        for i in range(4):
+            for j in range(4):
+                self.assertAlmostEqual(actual[i][j], expected[i][j], places=4)
+
+    def test_o3_blocked_64_matches_checksum_and_corners(self):
+        source = replace_n(STRASSEN_PATH.read_text(encoding="utf-8"), 64)
+        llvm_code = compile_to_llvm_optimized(source, level=3)
+        output = run_llvm_ir(llvm_code, timeout=60)
         n_val, checksum, c11, cnn = parse_summary(output)
         expected = matmul(gen_matrix(64, 12345), gen_matrix(64, 13345))
         expected_sum = sum(sum(row) for row in expected)

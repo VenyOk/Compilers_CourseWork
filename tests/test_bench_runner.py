@@ -13,7 +13,6 @@ from bench_runner import (
     buildSummarySvg,
     csvPathFromJsonPath,
     LONG_BENCH_FILES,
-    defaultThreadSweep,
     defaultTileSweep,
     reportPathFromJsonPath,
     selectedBenchmarkFiles,
@@ -83,13 +82,11 @@ class TestBenchRunner(unittest.TestCase):
             article_core_files={"bench_metelitsa_gs2d.f", "bench_metelitsa_dir2d.f"},
             focus_title="Article-Like Focus",
             repeat=5,
-            threads=8,
             autotune_enabled=False,
             summary_chart_name="summary.svg",
             speedup_chart_name="speedups.svg",
         )
         self.assertIn("Article-Like Focus", report)
-        self.assertIn("Parallel threads: `8`", report)
         self.assertIn("Autotuning: `off`", report)
         self.assertIn("Metelitsa: Dirichlet 2D", report)
         self.assertIn("Charts", report)
@@ -105,8 +102,6 @@ class TestBenchRunner(unittest.TestCase):
                         "optimizer_stats": {
                             "LoopSkewing": {"diagnostics": [{"family": "dirichlet_gs", "reason": "need skew"}]},
                             "LoopTiling": {"diagnostics": [{"family": "dirichlet_gs", "vars": ["T", "I", "J"], "tile_sizes": [64, 50, 50], "point_order": ["T", "J", "I"]}]},
-                            "LoopWavefront": {"diagnostics": [{"family": "dirichlet_gs", "reason": "wavefront"}]},
-                            "LoopParallelization": {"diagnostics": [{"family": "dirichlet_gs", "strategy": "wavefront", "grain": 4, "reason": "parallel"}]},
                         },
                         "source_loop_diagnostics": [{"family": "dirichlet_gs", "accesses": 9, "depth": 3}],
                         "optimized_loop_diagnostics": [],
@@ -122,9 +117,8 @@ class TestBenchRunner(unittest.TestCase):
                 "baseline": 12.0,
                 "o2": 9.0,
                 "o3_sequential": 8.0,
-                "o3_parallel_default": 6.5,
-                "best": {"threads": 8, "tile_sizes": [64, 50, 50], "time": 6.0},
-                "candidates": [{"threads": 8, "tile_sizes": [64, 50, 50], "time": 6.0}],
+                "best": {"tile_sizes": [64, 50, 50], "time": 6.0},
+                "candidates": [{"tile_sizes": [64, 50, 50], "time": 6.0}],
             }
         ]
         report = buildMarkdownReport(results, [0, 2, 3], summary, experiments=experiments)
@@ -216,8 +210,6 @@ class TestBenchRunner(unittest.TestCase):
         self.assertIn("Baseline / O2 / O3 Speedups", speedup_svg)
 
     def test_autotuned_experiment_helpers(self):
-        self.assertEqual(defaultThreadSweep(0), [1, 2, 4, 8])
-        self.assertEqual(defaultThreadSweep(4), [1, 2, 4])
         self.assertTrue(defaultTileSweep("bench_metelitsa_gs2d.f"))
         experiments = [
             {
@@ -226,14 +218,12 @@ class TestBenchRunner(unittest.TestCase):
                 "baseline": 10.0,
                 "o2": 8.0,
                 "o3_sequential": 7.0,
-                "o3_parallel_default": 6.0,
-                "best": {"threads": 4, "tile_sizes": [24, 50, 50], "time": 5.0},
+                "best": {"tile_sizes": [24, 50, 50], "time": 5.0},
                 "candidates": [],
             }
         ]
         summary = summarizeExperiments(experiments)
         self.assertAlmostEqual(summary["sequential_geomean"], 10.0 / 7.0)
-        self.assertAlmostEqual(summary["default_parallel_geomean"], 10.0 / 6.0)
         self.assertAlmostEqual(summary["tuned_geomean"], 2.0)
         report = buildMarkdownReport(
             [

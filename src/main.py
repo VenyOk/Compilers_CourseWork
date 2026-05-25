@@ -147,7 +147,7 @@ def main():
         type=int,
         default=0,
         choices=[0, 2, 3],
-        help='Уровень оптимизации: 0=нет, 2=CSE/LICM/interchange/тайлинг, 3=Metelitsa O3 pipeline (skewing/tiling/intra-tile interchange/wavefront/OpenMP)'
+        help='Уровень оптимизации: 0=нет, 2=CSE/LICM/interchange/тайлинг, 3=Metelitsa O3 pipeline (skewing/tiling/intra-tile interchange/linearization)'
     )
     args = parser.parse_args()
     if not args.file.endswith('.f'):

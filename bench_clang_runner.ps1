@@ -41,8 +41,6 @@ $BenchLabels = @{
     "bench_heavy_pi" = "[Heavy] Pi"
 }
 
-$NativeParallelRuntime = Join-Path $RepoRoot "runtime\fortran_parallel_runtime.c"
-
 function Resolve-ClangPath {
     $candidates = @(
         "C:\Program Files\LLVM\bin\clang.exe",
@@ -118,11 +116,7 @@ function Compile-LlToExe([string]$ClangPath, [string]$LlPath, [string]$ExePath, 
     $psi.UseShellExecute = $false
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
-    if (Test-Path $NativeParallelRuntime) {
-        $psi.Arguments = ('"{0}" "{1}" "-Wl,/STACK:{2}" -o "{3}"' -f $LlPath, $NativeParallelRuntime, $StackSize, $ExePath)
-    } else {
-        $psi.Arguments = ('"{0}" "-Wl,/STACK:{1}" -o "{2}"' -f $LlPath, $StackSize, $ExePath)
-    }
+    $psi.Arguments = ('"{0}" "-Wl,/STACK:{1}" -o "{2}"' -f $LlPath, $StackSize, $ExePath)
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $psi
     [void]$process.Start()

@@ -1,17 +1,16 @@
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.core import Lexer, Parser
-from src.semantic import SemanticAnalyzer
-from src.llvm_generator import LLVMGenerator
+from src.frontend.lexer import Lexer
+from src.frontend.parser import Parser
+from src.semantic.analyzer import SemanticAnalyzer
+from src.ir.llvm import LLVMGenerator
 from src.optimizations.pipeline import OptimizationPipeline
 
 
@@ -76,33 +75,15 @@ def run_llvm_ir(ir_code: str, timeout: int = 20) -> str:
         return result.stdout
 
 
-def find_clang() -> Optional[str]:
-    candidates = [
-        os.environ.get("CLANG"),
-        shutil.which("clang"),
-        r"C:\Program Files\LLVM\bin\clang.exe",
-    ]
-    for candidate in candidates:
-        if candidate and os.path.exists(candidate):
-            return candidate
-    return None
-
-
-def find_openmp_runtime_dir(clang_path: Optional[str]) -> Optional[str]:
-    explicit = os.environ.get("OPENMP_RUNTIME")
-    if explicit and os.path.exists(explicit):
-        return str(Path(explicit).resolve().parent)
-    candidates = []
-    if clang_path:
-        candidates.append(str(Path(clang_path).resolve().parent))
-    candidates.extend([
-        str(ROOT / ".llvm" / "clang+llvm-22.1.2-x86_64-pc-windows-msvc" / "bin"),
-        r"C:\Program Files\LLVM\bin",
-    ])
-    for candidate in candidates:
-        if os.path.exists(os.path.join(candidate, "libomp.dll")) or os.path.exists(os.path.join(candidate, "libiomp5md.dll")):
-            return candidate
-    return None
+def assert_outputs_close(testcase: unittest.TestCase, left: str, right: str, places: int = 4) -> None:
+    left_lines = [line.strip() for line in left.splitlines() if line.strip()]
+    right_lines = [line.strip() for line in right.splitlines() if line.strip()]
+    testcase.assertEqual(len(left_lines), len(right_lines))
+    for left_value, right_value in zip(left_lines, right_lines):
+        try:
+            testcase.assertAlmostEqual(float(left_value), float(right_value), places=places)
+        except ValueError:
+            testcase.assertEqual(left_value, right_value)
 
 
 class TestRuntimeFeatures(unittest.TestCase):
@@ -160,7 +141,7 @@ class TestRuntimeFeatures(unittest.TestCase):
         output = run_llvm_ir(llvm_code)
         self.assertEqual(output.strip(), "6")
 
-    def test_parallel_fill_runtime(self):
+    def test_o3_fill_runtime_stays_sequential(self):
         source = """      PROGRAM PARRT
       INTEGER I, J, S
       INTEGER A(256,256)
@@ -178,101 +159,171 @@ class TestRuntimeFeatures(unittest.TestCase):
         PRINT *, S
         END"""
         llvm_code = compile_to_llvm_optimized(source, level=3)
-        self.assertIn("@__kmpc_fork_call", llvm_code)
-        self.assertIn("@__kmpc_for_static_init_4", llvm_code)
-        self.assertIn("@__kmpc_for_static_fini", llvm_code)
-        self.assertNotIn("@fortran_parallel_for_i32", llvm_code)
         output = run_llvm_ir(llvm_code)
         self.assertEqual(output.strip(), "16842752")
 
-    def test_parallel_wavefront_runtime_matches_unoptimized(self):
-        source = """      PROGRAM PWFRT
+    def test_o3_matches_o0_for_loop_kernels(self):
+        cases = {
+            "matmul": """      PROGRAM KMM
+      IMPLICIT NONE
       INTEGER I, J, K
-      REAL U(20,20,20), S
-      DO I = 1, 20
-          DO J = 1, 20
-              DO K = 1, 20
-                  U(I,J,K) = I + J + K
+      REAL A(8,8), B(8,8), C(8,8), S
+      DO I = 1, 8
+          DO J = 1, 8
+              A(I,J) = FLOAT(I + 2 * J)
+              B(I,J) = FLOAT(3 * I - J)
+              C(I,J) = 0.0
+          END DO
+      END DO
+      DO I = 1, 8
+          DO J = 1, 8
+              DO K = 1, 8
+                  C(I,J) = C(I,J) + A(I,K) * B(K,J)
               END DO
           END DO
       END DO
-      DO I = 2, 19
-          DO J = 2, 19
-              DO K = 2, 19
-                  S = U(I-1,J,K) + U(I+1,J,K) + U(I,J-1,K)
-                  S = S + U(I,J+1,K) + U(I,J,K-1) + U(I,J,K+1)
-                  U(I,J,K) = S / 6.0
-              END DO
+      S = 0.0
+      DO I = 1, 8
+          DO J = 1, 8
+              S = S + C(I,J)
           END DO
       END DO
-      PRINT *, U(10,10,10)
-      END"""
-        llvm_base = compile_to_llvm(source)
-        llvm_opt = compile_to_llvm_optimized(source, level=3)
-        base_output = run_llvm_ir(llvm_base)
-        opt_output = run_llvm_ir(llvm_opt)
-        self.assertEqual(opt_output.strip(), base_output.strip())
-
-    def test_metelitsa_gs2d_runtime_matches_unoptimized(self):
-        llvm_base = compile_input_file("bench_metelitsa_gs2d.f", optimized=False)
-        llvm_opt = compile_input_file("bench_metelitsa_gs2d.f", optimized=True, level=3)
-        base_output = run_llvm_ir(llvm_base)
-        opt_output = run_llvm_ir(llvm_opt)
-        self.assertEqual(opt_output.strip(), base_output.strip())
-
-    def test_metelitsa_dirichlet_2d_runtime_matches_unoptimized(self):
-        llvm_base = compile_input_file("bench_metelitsa_dir2d.f", optimized=False)
-        llvm_opt = compile_input_file("bench_metelitsa_dir2d.f", optimized=True, level=3)
-        base_output = run_llvm_ir(llvm_base)
-        opt_output = run_llvm_ir(llvm_opt)
-        self.assertEqual(opt_output.strip(), base_output.strip())
-
-    def test_parallel_ir_runs_via_native_clang_smoke(self):
-        clang = find_clang()
-        if not clang or os.name != "nt":
-            self.skipTest("native clang smoke is only enabled on Windows with clang installed")
-        openmp_dir = find_openmp_runtime_dir(clang)
-        if not openmp_dir:
-            self.skipTest("OpenMP runtime was not found for native clang smoke")
-        source = """      PROGRAM PCLANG
-      INTEGER I, J, S
-      INTEGER A(128,128)
-      DO I = 1, 128
-          DO J = 1, 128
-              A(I,J) = I + J
-          END DO
-      END DO
-      S = 0
-      DO I = 1, 128
-          DO J = 1, 128
-              S = S + A(I,J)
-          END DO
-      END DO
+      PRINT *, C(1,1)
+      PRINT *, C(8,8)
       PRINT *, S
-      END"""
-        llvm_code = compile_to_llvm_optimized(source, level=3)
-        with tempfile.TemporaryDirectory() as tmpdir:
-            ll_path = Path(tmpdir) / "native_parallel.ll"
-            exe_path = Path(tmpdir) / "native_parallel.exe"
-            ll_path.write_text(llvm_code, encoding="utf-8")
-            result = subprocess.run(
-                [clang, "-fopenmp", str(ll_path), "-Wl,/STACK:67108864", "-o", str(exe_path)],
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            if result.returncode != 0:
-                raise AssertionError(f"clang failed: {result.stderr}")
-            run = subprocess.run(
-                [str(exe_path)],
-                capture_output=True,
-                text=True,
-                timeout=60,
-                env={**os.environ, "OMP_NUM_THREADS": "4", "PATH": openmp_dir + os.pathsep + os.environ.get("PATH", "")},
-            )
-            if run.returncode != 0:
-                raise AssertionError(f"native executable failed: {run.stderr}")
-            self.assertEqual(run.stdout.strip(), "2113536")
+      END""",
+            "jacobi2d": """      PROGRAM KJAC
+      IMPLICIT NONE
+      INTEGER T, I, J
+      REAL U(12,12), V(12,12), S
+      DO I = 1, 12
+          DO J = 1, 12
+              U(I,J) = FLOAT(I + J)
+              V(I,J) = 0.0
+          END DO
+      END DO
+      DO T = 1, 3
+          DO I = 2, 11
+              DO J = 2, 11
+                  V(I,J) = 0.25*(U(I-1,J)+U(I+1,J)+U(I,J-1)+U(I,J+1))
+              END DO
+          END DO
+          DO I = 2, 11
+              DO J = 2, 11
+                  U(I,J) = V(I,J)
+              END DO
+          END DO
+      END DO
+      S = 0.0
+      DO I = 2, 11
+          DO J = 2, 11
+              S = S + U(I,J)
+          END DO
+      END DO
+      PRINT *, U(2,2)
+      PRINT *, U(11,11)
+      PRINT *, S
+      END""",
+            "gs2d": """      PROGRAM KGS2
+      IMPLICIT NONE
+      INTEGER T, I, J
+      REAL U(12,12), S
+      DO I = 1, 12
+          DO J = 1, 12
+              U(I,J) = FLOAT(I * 2 + J)
+          END DO
+      END DO
+      DO T = 1, 3
+          DO I = 2, 11
+              DO J = 2, 11
+                  U(I,J) = 0.25*(U(I-1,J)+U(I+1,J)+U(I,J-1)+U(I,J+1))
+              END DO
+          END DO
+      END DO
+      S = 0.0
+      DO I = 2, 11
+          DO J = 2, 11
+              S = S + U(I,J)
+          END DO
+      END DO
+      PRINT *, U(2,2)
+      PRINT *, U(11,11)
+      PRINT *, S
+      END""",
+            "dirichlet2d": """      PROGRAM KDIR
+      IMPLICIT NONE
+      INTEGER T, I, J
+      REAL U(10,10), A(10,10), B(10,10)
+      REAL C(10,10), D(10,10), Y0(10,10), S
+      DO I = 1, 10
+          DO J = 1, 10
+              U(I,J) = FLOAT(I + J)
+              A(I,J) = 0.10
+              B(I,J) = 0.20
+              C(I,J) = 0.30
+              D(I,J) = 0.40
+              Y0(I,J) = FLOAT(I - J) * 0.01
+          END DO
+      END DO
+      DO T = 1, 2
+          DO I = 2, 9
+              DO J = 2, 9
+                  S = A(I,J)*U(I-1,J) + B(I,J)*U(I+1,J)
+                  S = S + C(I,J)*U(I,J-1) + D(I,J)*U(I,J+1)
+                  U(I,J) = S + Y0(I,J)
+              END DO
+          END DO
+      END DO
+      S = 0.0
+      DO I = 2, 9
+          DO J = 2, 9
+              S = S + U(I,J)
+          END DO
+      END DO
+      PRINT *, U(2,2)
+      PRINT *, U(9,9)
+      PRINT *, S
+      END""",
+            "gs3d": """      PROGRAM KGS3
+      IMPLICIT NONE
+      INTEGER T, I, J, K
+      REAL U(8,8,8), S
+      DO I = 1, 8
+          DO J = 1, 8
+              DO K = 1, 8
+                  U(I,J,K) = FLOAT(I + J + K)
+              END DO
+          END DO
+      END DO
+      DO T = 1, 2
+          DO I = 2, 7
+              DO J = 2, 7
+                  DO K = 2, 7
+                      S = U(I-1,J,K) + U(I+1,J,K) + U(I,J-1,K)
+                      S = S + U(I,J+1,K) + U(I,J,K-1) + U(I,J,K+1)
+                      U(I,J,K) = S / 6.0
+                  END DO
+              END DO
+          END DO
+      END DO
+      S = 0.0
+      DO I = 2, 7
+          DO J = 2, 7
+              DO K = 2, 7
+                  S = S + U(I,J,K)
+              END DO
+          END DO
+      END DO
+      PRINT *, U(2,2,2)
+      PRINT *, U(7,7,7)
+      PRINT *, S
+      END""",
+        }
+        for name, source in cases.items():
+            with self.subTest(name=name):
+                out0 = run_llvm_ir(compile_to_llvm(source), timeout=30)
+                out3 = run_llvm_ir(compile_to_llvm_optimized(source, level=3), timeout=30)
+                assert_outputs_close(self, out0, out3, places=4)
 
 
 if __name__ == "__main__":

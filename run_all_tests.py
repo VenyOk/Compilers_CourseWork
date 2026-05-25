@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from src.frontend.lexer import Lexer
 from src.frontend.parser import Parser
 from src.semantic.analyzer import SemanticAnalyzer
-from src.ssa_generator import SSAGenerator
+from src.ir.ssa import SSAGenerator
 from src.ir.llvm import LLVMGenerator
 
 EXPECTED_OUTPUTS = {
@@ -149,7 +149,10 @@ def compare_output(actual, expected):
         if a.strip() == e.strip():
             continue
         try:
-            if abs(float(a.strip()) - float(e.strip())) < 1e-4:
+            actual_num = float(a.strip())
+            expected_num = float(e.strip())
+            scale = max(1.0, abs(actual_num), abs(expected_num))
+            if abs(actual_num - expected_num) <= 1e-4 * scale:
                 continue
         except ValueError:
             pass

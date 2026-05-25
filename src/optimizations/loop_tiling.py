@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from copy import deepcopy
 from dataclasses import replace as dcReplace
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from src.frontend.ast import (
     ArrayRef,
@@ -21,16 +21,23 @@ from src.frontend.ast import (
 from src.optimizations.base import ASTOptimizationPass
 from src.optimizations.loop_analysis import (
     LoopNest,
+    articleOptimalTileSide,
     buildNest,
+    canInterchangePointOrder,
+    chooseIntraTileLoopOrder,
     constantInt,
     countArrayAccesses,
     effectiveStateCarriedPrefixDepth,
     estimateTripCount,
+    isIterativeTypeNest,
     isStencilLikeNest,
+    shouldApplySideSliceInterchange,
+    sideSliceBandStart,
     stencilFamily,
     shouldTileNest,
     uniqueArrayCount,
 )
+from src.optimizations.side_slice import applySideSliceToPointInfos, buildPointLoops
 
 def tileVarName(var: str) -> str:
     return f"tile_{var}"
@@ -128,6 +135,17 @@ def substituteExpr(expr: Expression, substitutions: Dict[str, Expression]) -> Ex
     return expr
 
 def tileSizesForNest(nest: LoopNest, baseTileSize: Optional[int], l1Bytes: int, override: Optional[List[int]] = None) -> List[int]:
+    from src.optimizations.article_core import articleTileSizesForNest
+    from src.optimizations.loop_analysis import articleModeEnabled
+
+    if articleModeEnabled():
+        return articleTileSizesForNest(
+            nest,
+            l1_bytes=l1Bytes,
+            elem_size=8,
+            base_tile_size=baseTileSize,
+            override=override,
+        )
     if override:
         result = list(override[:nest.depth])
         while len(result) < nest.depth:
@@ -202,14 +220,19 @@ def buildBounds(nest: LoopNest, tileSizes: List[int]):
     col = nest.loops[0].node.col
     lower_env: Dict[str, Expression] = {}
     upper_env: Dict[str, Expression] = {}
+    tile_lower_env: Dict[str, Expression] = {}
+    tile_upper_env: Dict[str, Expression] = {}
     point_env: Dict[str, Expression] = {}
     tile_infos = []
     point_infos = []
+    use_tile_env = any(loop_info.var.startswith("skew_") for loop_info in nest.loops)
     for index, loop_info in enumerate(nest.loops):
         tile_var = tileVarName(loop_info.var)
         tile_expr = Variable(name=tile_var, line=line, col=col)
-        start_bound = substituteExpr(loop_info.start, lower_env)
-        end_bound = substituteExpr(loop_info.end, upper_env)
+        bound_lower = tile_lower_env if use_tile_env else lower_env
+        bound_upper = tile_upper_env if use_tile_env else upper_env
+        start_bound = substituteExpr(loop_info.start, bound_lower)
+        end_bound = substituteExpr(loop_info.end, bound_upper)
         point_lower = substituteExpr(loop_info.start, point_env)
         point_upper = substituteExpr(loop_info.end, point_env)
         step_value = constantInt(loop_info.step)
@@ -217,34 +240,69 @@ def buildBounds(nest: LoopNest, tileSizes: List[int]):
             return None
         point_start = maxExpr(tile_expr, point_lower)
         point_end = minExpr(addInt(tile_expr, step_value * (tileSizes[index] - 1)), point_upper)
+        tile_span_end = addInt(tile_expr, step_value * (tileSizes[index] - 1))
         lower_env[loop_info.var] = point_start
         upper_env[loop_info.var] = point_end
+        tile_lower_env[loop_info.var] = tile_expr
+        tile_upper_env[loop_info.var] = tile_span_end
         point_env[loop_info.var] = Variable(name=loop_info.var, line=line, col=col)
         tile_infos.append((tile_var, start_bound, end_bound, step_value * tileSizes[index]))
         point_infos.append((loop_info.var, point_start, point_end, loop_info.step))
     return tile_infos, point_infos
 
-def tileAffineNest(nest: LoopNest, tileSizes: List[int]) -> Optional[Statement]:
+def tileAffineNest(nest: LoopNest, tileSizes: List[int]) -> Optional[Tuple[Statement, bool]]:
     bounds = buildBounds(nest, tileSizes)
     if bounds is None:
         return None
     tile_infos, point_infos = bounds
     line = nest.loops[0].node.line
     col = nest.loops[0].node.col
+    slice_start = sideSliceBandStart(nest)
+    slice_nest = LoopNest(loops=nest.loops[slice_start:nest.depth], body=nest.body)
+    point_order = chooseIntraTileLoopOrder(slice_nest)
+    loop_vars = set(nest.vars)
+    side_sliced = False
+    slice_count = nest.depth - slice_start
+    spatial_skew_depth = sum(
+        1 for loop_info in nest.loops[slice_start:] if loop_info.var.startswith("skew_")
+    )
+    skip_side_slice = slice_count >= 3 and spatial_skew_depth >= 2
+    if (
+        not skip_side_slice
+        and shouldApplySideSliceInterchange(nest, slice_start)
+        and slice_count >= 2
+        and point_order != list(range(slice_count))
+        and canInterchangePointOrder(nest, slice_start, point_order)
+    ):
+        prefix_infos = point_infos[:slice_start]
+        slice_infos = point_infos[slice_start:]
+        remapped_slice, side_sliced = applySideSliceToPointInfos(
+            slice_infos,
+            point_order,
+            loop_vars,
+            line,
+            col,
+        )
+        point_infos = prefix_infos + remapped_slice
     body = nest.body
-    ordered_points = [(nest.loops[index], point_infos[index]) for index in range(nest.depth)]
-    for loop_info, point_info in reversed(ordered_points):
-        _, point_start, point_end, point_step = point_info
-        body = [DoLoop(
-            var=loop_info.var,
-            start=point_start,
-            end=point_end,
-            step=point_step,
-            body=body,
-            stmt_label=None,
-            line=line,
-            col=col,
-        )]
+    original_point_vars = [loop_info.var for loop_info in nest.loops]
+    reordered = [info[0] for info in point_infos] != original_point_vars
+    if side_sliced or reordered:
+        body = buildPointLoops(point_infos, body, line, col)
+    else:
+        ordered_points = [(nest.loops[index], point_infos[index]) for index in range(nest.depth)]
+        for loop_info, point_info in reversed(ordered_points):
+            _, point_start, point_end, point_step = point_info
+            body = [DoLoop(
+                var=loop_info.var,
+                start=point_start,
+                end=point_end,
+                step=point_step,
+                body=body,
+                stmt_label=None,
+                line=line,
+                col=col,
+            )]
     for tile_var, tile_start, tile_end, tile_step in reversed(tile_infos):
         body = [DoLoop(
             var=tile_var,
@@ -256,14 +314,20 @@ def tileAffineNest(nest: LoopNest, tileSizes: List[int]) -> Optional[Statement]:
             line=line,
             col=col,
         )]
-    return body[0]
+    return body[0], side_sliced
 
-def tileDiagnostic(nest: LoopNest, tile_sizes: List[int]) -> Dict[str, object]:
+def tileDiagnostic(nest: LoopNest, tile_sizes: List[int], side_sliced: bool = False) -> Dict[str, object]:
+    slice_start = sideSliceBandStart(nest)
+    slice_nest = LoopNest(loops=nest.loops[slice_start:nest.depth], body=nest.body)
+    point_order = chooseIntraTileLoopOrder(slice_nest)
+    slice_vars = [loop_info.var for loop_info in nest.loops[slice_start:nest.depth]]
     return {
         "vars": list(nest.vars),
         "family": stencilFamily(nest),
         "tile_sizes": list(tile_sizes),
-        "point_order": list(nest.vars),
+        "point_order": [slice_vars[index] for index in point_order],
+        "side_sliced": side_sliced,
+        "iterative": isIterativeTypeNest(nest),
         "state_prefix_depth": effectiveStateCarriedPrefixDepth(nest),
         "accesses": countArrayAccesses(nest),
     }
@@ -286,9 +350,10 @@ def tryTile(loop: Statement, baseTileSize: Optional[int], minDepth: int, l1Bytes
     tile_sizes = tileSizesForNest(nest, baseTileSize, l1Bytes, override=override)
     transformed = tileAffineNest(nest, tile_sizes)
     if transformed is not None:
+        transformed_loop, side_sliced = transformed
         counter[0] += 1
-        diagnostics.append(tileDiagnostic(nest, tile_sizes))
-        return transformed
+        diagnostics.append(tileDiagnostic(nest, tile_sizes, side_sliced=side_sliced))
+        return transformed_loop
     return dcReplace(loop, body=[tryTile(stmt, baseTileSize, minDepth, l1Bytes, counter, diagnostics) for stmt in loop.body])
 
 def processStmts(stmts: List[Statement], baseTileSize: Optional[int], minDepth: int, l1Bytes: int, counter: List[int], diagnostics: List[Dict[str, object]]) -> List[Statement]:
@@ -323,7 +388,7 @@ class LoopTiling(ASTOptimizationPass):
         ]
         self.stats = {
             "tiled": counter[0],
-            "tile_size": self.baseTileSize if self.baseTileSize is not None else optimalTileSize(2, l1Bytes=self.l1Bytes),
+            "tile_size": self.baseTileSize if self.baseTileSize is not None else articleOptimalTileSide(l1_bytes=self.l1Bytes, spatial_dims=2),
             "tile_override": ",".join(str(x) for x in tileSizesFromEnv()) if tileSizesFromEnv() else "",
             "diagnostics": diagnostics,
         }

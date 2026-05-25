@@ -17,6 +17,9 @@ BENCH_FILES = [
     "inputs/bench_lcinv.f",
     "inputs/bench_csesin.f",
     "inputs/bench_matmul.f",
+    "inputs/bench_dotprod.f",
+    "inputs/bench_saxpy.f",
+    "inputs/bench_jacobi2d.f",
     "inputs/bench_stencil_2d.f",
     "inputs/bench_gs2d.f",
     "inputs/bench_gs3d.f",
@@ -40,6 +43,9 @@ BENCH_LABELS = {
     "bench_lcinv.f": "LICM: SQRT invariant",
     "bench_csesin.f": "CSE: SIN/COS repeated",
     "bench_matmul.f": "Matmul 100x100",
+    "bench_dotprod.f": "Dot product 500k",
+    "bench_saxpy.f": "SAXPY 500k",
+    "bench_jacobi2d.f": "Jacobi 2D 256x256",
     "bench_stencil_2d.f": "2D stencil double-buffer",
     "bench_gs2d.f": "2D Gauss-Seidel in-place",
     "bench_gs3d.f": "3D Gauss-Seidel in-place",
@@ -58,6 +64,9 @@ BENCH_LABELS = {
 
 ARTICLE_CORE_FILES = {
     "bench_matmul.f",
+    "bench_dotprod.f",
+    "bench_saxpy.f",
+    "bench_jacobi2d.f",
     "bench_stencil_2d.f",
     "bench_gs2d.f",
     "bench_gs3d.f",
@@ -122,9 +131,10 @@ def tileKey(tile_sizes: Optional[Sequence[int]]) -> str:
 
 
 def compileArtifact(fortranFile: str, optLevel: int, tile_sizes: Optional[Sequence[int]] = None) -> Optional[Dict]:
-    from src.core import Lexer, Parser
-    from src.semantic import SemanticAnalyzer
-    from src.llvm_generator import LLVMGenerator
+    from src.frontend.lexer import Lexer
+    from src.frontend.parser import Parser
+    from src.semantic.analyzer import SemanticAnalyzer
+    from src.ir.llvm import LLVMGenerator
     from src.optimizations.loop_analysis import describeNest, extractLoopNests
 
     suffix = f"O{optLevel}"
@@ -180,12 +190,10 @@ def compileToLl(fortranFile: str, optLevel: int, tile_sizes: Optional[Sequence[i
     return artifact["ll_path"]
 
 
-def runLl(llPath: str, repeat: int = 3, threads: int = 0) -> Optional[float]:
+def runLl(llPath: str, repeat: int = 3) -> Optional[float]:
     runner = str(ROOT / "test_llvmlite_run.py")
     try:
         env = os.environ.copy()
-        if threads > 0:
-            env["OMP_NUM_THREADS"] = str(threads)
         bench_runs = max(int(repeat), 1)
         result = subprocess.run(
             [sys.executable, runner, llPath, "--bench", str(bench_runs)],
@@ -205,24 +213,11 @@ def runLl(llPath: str, repeat: int = 3, threads: int = 0) -> Optional[float]:
         return None
 
 
-def defaultThreadSweep(max_threads: int) -> List[int]:
-    if max_threads > 0:
-        values = {1, max_threads}
-        if max_threads >= 2:
-            values.add(2)
-        if max_threads >= 4:
-            values.add(4)
-        if max_threads >= 8:
-            values.add(8)
-        return sorted(values)
-    return [1, 2, 4, 8]
-
-
 def defaultTileSweep(file_name: str) -> List[List[int]]:
     return ARTICLE_TILE_SWEEPS.get(file_name, [])
 
 
-def benchmarkFile(fortranFile: str, levels: List[int], repeat: int = 3, threads: int = 0) -> Dict:
+def benchmarkFile(fortranFile: str, levels: List[int], repeat: int = 3) -> Dict:
     label = BENCH_LABELS.get(Path(fortranFile).name, Path(fortranFile).stem)
     result = {"file": Path(fortranFile).name, "label": label, "times": {}, "metadata": {}}
     for level in levels:
@@ -236,11 +231,11 @@ def benchmarkFile(fortranFile: str, levels: List[int], repeat: int = 3, threads:
             "source_loop_diagnostics": artifact["source_loop_diagnostics"],
             "optimized_loop_diagnostics": artifact["optimized_loop_diagnostics"],
         }
-        result["times"][f"O{level}"] = runLl(artifact["ll_path"], repeat=repeat, threads=threads)
+        result["times"][f"O{level}"] = runLl(artifact["ll_path"], repeat=repeat)
     return result
 
 
-def runAutotunedExperiment(fortranFile: str, repeat: int, threads: int) -> Optional[Dict]:
+def runAutotunedExperiment(fortranFile: str, repeat: int) -> Optional[Dict]:
     file_name = Path(fortranFile).name
     if file_name not in ARTICLE_CORE_FILES:
         return None
@@ -249,36 +244,30 @@ def runAutotunedExperiment(fortranFile: str, repeat: int, threads: int) -> Optio
     o3_default_artifact = compileArtifact(fortranFile, 3)
     if base_artifact is None or o2_artifact is None or o3_default_artifact is None:
         return None
-    baseline = runLl(base_artifact["ll_path"], repeat=repeat, threads=1)
-    o2_time = runLl(o2_artifact["ll_path"], repeat=repeat, threads=1)
-    o3_seq = runLl(o3_default_artifact["ll_path"], repeat=repeat, threads=1)
-    o3_par = runLl(o3_default_artifact["ll_path"], repeat=repeat, threads=threads)
-    if baseline is None or o2_time is None or o3_seq is None or o3_par is None:
+    baseline = runLl(base_artifact["ll_path"], repeat=repeat)
+    o2_time = runLl(o2_artifact["ll_path"], repeat=repeat)
+    o3_seq = runLl(o3_default_artifact["ll_path"], repeat=repeat)
+    if baseline is None or o2_time is None or o3_seq is None:
         return None
-    if o3_seq <= o3_par:
-        best = {"threads": 1, "tile_sizes": None, "time": o3_seq}
-    else:
-        best = {"threads": threads if threads > 0 else defaultThreadSweep(threads)[-1], "tile_sizes": None, "time": o3_par}
+    best = {"tile_sizes": None, "time": o3_seq}
     candidates = []
     for tile_sizes in defaultTileSweep(file_name):
         artifact = compileArtifact(fortranFile, 3, tile_sizes=tile_sizes)
         if artifact is None:
             continue
-        for thread_count in defaultThreadSweep(threads):
-            tuned_time = runLl(artifact["ll_path"], repeat=repeat, threads=thread_count)
-            if tuned_time is None:
-                continue
-            candidate = {"threads": thread_count, "tile_sizes": list(tile_sizes), "time": tuned_time}
-            candidates.append(candidate)
-            if tuned_time < best["time"]:
-                best = candidate
+        tuned_time = runLl(artifact["ll_path"], repeat=repeat)
+        if tuned_time is None:
+            continue
+        candidate = {"tile_sizes": list(tile_sizes), "time": tuned_time}
+        candidates.append(candidate)
+        if tuned_time < best["time"]:
+            best = candidate
     return {
         "file": file_name,
         "label": BENCH_LABELS.get(file_name, file_name),
         "baseline": baseline,
         "o2": o2_time,
         "o3_sequential": o3_seq,
-        "o3_parallel_default": o3_par,
         "metadata": {
             "O2": {
                 "optimizer_stats": o2_artifact["optimizer_stats"],
@@ -292,7 +281,6 @@ def runAutotunedExperiment(fortranFile: str, repeat: int, threads: int) -> Optio
             },
         },
         "best": {
-            "threads": best["threads"],
             "tile_sizes": list(best["tile_sizes"]) if best["tile_sizes"] else None,
             "time": best["time"],
         },
@@ -300,10 +288,10 @@ def runAutotunedExperiment(fortranFile: str, repeat: int, threads: int) -> Optio
     }
 
 
-def buildAutotunedExperiments(files: Sequence[str], repeat: int, threads: int) -> List[Dict]:
+def buildAutotunedExperiments(files: Sequence[str], repeat: int) -> List[Dict]:
     experiments = []
     for path in files:
-        experiment = runAutotunedExperiment(path, repeat=repeat, threads=threads)
+        experiment = runAutotunedExperiment(path, repeat=repeat)
         if experiment is not None:
             experiments.append(experiment)
     return experiments
@@ -372,12 +360,10 @@ def summarizeResults(results: List[Dict], levels: List[int], article_core_files:
 
 def summarizeExperiments(experiments: List[Dict]) -> Dict:
     tuned = [speedup(item["baseline"], item["best"]["time"]) for item in experiments if speedup(item["baseline"], item["best"]["time"]) is not None]
-    default_parallel = [speedup(item["baseline"], item["o3_parallel_default"]) for item in experiments if speedup(item["baseline"], item["o3_parallel_default"]) is not None]
     sequential = [speedup(item["baseline"], item["o3_sequential"]) for item in experiments if speedup(item["baseline"], item["o3_sequential"]) is not None]
     return {
         "count": len(experiments),
         "tuned_geomean": geometricMean(tuned),
-        "default_parallel_geomean": geometricMean(default_parallel),
         "sequential_geomean": geometricMean(sequential),
     }
 
@@ -431,12 +417,10 @@ def buildExperimentRows(experiments: List[Dict]) -> List[List[str]]:
             formatMs(item["baseline"]),
             formatMs(item["o2"]),
             formatMs(item["o3_sequential"]),
-            formatMs(item["o3_parallel_default"]),
             formatMs(best["time"]),
-            str(best["threads"]),
             formatTiles(best["tile_sizes"]),
             formatSpeedup(speedup(item["baseline"], best["time"])),
-            formatSpeedup(speedup(item["o3_parallel_default"], best["time"])),
+            formatSpeedup(speedup(item["o3_sequential"], best["time"])),
         ])
     return rows
 
@@ -449,12 +433,9 @@ def buildArticleStyleRows(experiments: List[Dict]) -> List[List[str]]:
             item["label"],
             formatMs(item["baseline"]),
             formatMs(item["o3_sequential"]),
-            formatMs(item["o3_parallel_default"]),
             formatMs(best["time"]),
             formatTiles(best["tile_sizes"]),
-            str(best["threads"]),
             formatSpeedup(speedup(item["baseline"], item["o3_sequential"])),
-            formatSpeedup(speedup(item["baseline"], item["o3_parallel_default"])),
             formatSpeedup(speedup(item["baseline"], best["time"])),
         ])
     return rows
@@ -518,9 +499,7 @@ def buildDiagnosticRows(results: List[Dict]) -> List[List[str]]:
         stats = meta.get("optimizer_stats", {})
         skew_diag = firstPassDiagnostic(stats, "LoopSkewing")
         tile_diag = firstPassDiagnostic(stats, "LoopTiling")
-        wavefront_diag = firstPassDiagnostic(stats, "LoopWavefront")
-        parallel_diag = firstPassDiagnostic(stats, "LoopParallelization")
-        if source_diag is None and not any([skew_diag, tile_diag, wavefront_diag, parallel_diag]):
+        if source_diag is None and not any([skew_diag, tile_diag]):
             continue
         family = source_diag.get("family") if source_diag else "-"
         skew_value = "no"
@@ -532,20 +511,12 @@ def buildDiagnosticRows(results: List[Dict]) -> List[List[str]]:
         point_order = "-"
         if tile_diag and tile_diag.get("point_order"):
             point_order = " -> ".join(tile_diag["point_order"])
-        wavefront_value = "no"
-        if wavefront_diag:
-            wavefront_value = f"yes ({wavefront_diag.get('reason', '-')})"
-        parallel_value = "no"
-        if parallel_diag:
-            parallel_value = f"{parallel_diag.get('strategy', 'parallel')} ({parallel_diag.get('grain', '-')})"
         rows.append([
             result["label"],
             family,
             skew_value,
             tile_value,
             point_order,
-            wavefront_value,
-            parallel_value,
         ])
     return rows
 
@@ -559,7 +530,6 @@ def buildTileSweepRows(experiments: List[Dict], limit: int = 3) -> List[List[str
             rows.append([
                 item["label"],
                 formatTiles(candidate.get("tile_sizes")),
-                str(candidate.get("threads")),
                 formatMs(candidate.get("time")),
                 formatSpeedup(speedup(baseline, candidate.get("time"))),
             ])
@@ -599,11 +569,10 @@ def printTable(results: List[Dict], levels: List[int]) -> None:
     print("=" * len(header))
 
 
-def printSummary(summary: Dict, levels: List[int], repeat: int, threads: int, experiments: List[Dict]) -> None:
+def printSummary(summary: Dict, levels: List[int], repeat: int, experiments: List[Dict]) -> None:
     print("\nSpeedup summary")
     print("-" * 80)
     print(f"Median repeats: {repeat}")
-    print(f"Parallel threads: {'auto' if threads <= 0 else threads}")
     for level in levels:
         if level == 0:
             continue
@@ -624,7 +593,6 @@ def printSummary(summary: Dict, levels: List[int], repeat: int, threads: int, ex
         tuned = summarizeExperiments(experiments)
         print(
             f"Autotuned article-core: sequential={formatSpeedup(tuned.get('sequential_geomean'))}, "
-            f"default-parallel={formatSpeedup(tuned.get('default_parallel_geomean'))}, "
             f"tuned={formatSpeedup(tuned.get('tuned_geomean'))}"
         )
 
@@ -747,8 +715,7 @@ def buildInterpretationLines(results: List[Dict], levels: List[int], summary: Di
         tuned = summarizeExperiments(experiments)
         lines.append(
             f"- In autotuned article-core experiments, transformed sequential execution reaches "
-            f"`{formatSpeedup(tuned.get('sequential_geomean'))}`, default parallel reaches "
-            f"`{formatSpeedup(tuned.get('default_parallel_geomean'))}`, and the best tuned mode reaches "
+            f"`{formatSpeedup(tuned.get('sequential_geomean'))}`, and the best tuned mode reaches "
             f"`{formatSpeedup(tuned.get('tuned_geomean'))}`."
         )
     lines.append(
@@ -855,7 +822,6 @@ def buildMarkdownReport(
     article_core_files: Optional[Set[str]] = None,
     focus_title: str = FOCUS_TITLE,
     repeat: int = 3,
-    threads: int = 0,
     autotune_enabled: bool = True,
     speedup_chart_name: Optional[str] = None,
     summary_chart_name: Optional[str] = None,
@@ -883,7 +849,6 @@ def buildMarkdownReport(
         "",
         f"- Levels: `{' '.join(f'O{level}' for level in levels)}`",
         f"- Median repeats: `{repeat}`",
-        f"- Parallel threads: `{'auto' if threads <= 0 else threads}`",
         f"- Autotuning: `{'on' if autotune_enabled else 'off'}`",
         "",
         "## Summary",
@@ -922,7 +887,7 @@ def buildMarkdownReport(
     if article_style_rows:
         lines.extend(["", "## Article-Style Experiments", ""])
         lines.extend(renderMarkdownTable(
-            ["Benchmark", "O0", "O3 seq", "O3 par", "Best tuned", "Tiles", "Threads", "Seq/O0", "Par/O0", "Best/O0"],
+            ["Benchmark", "O0", "O3 seq", "Best tuned", "Tiles", "Seq/O0", "Best/O0"],
             article_style_rows,
         ))
     if experiment_rows:
@@ -931,24 +896,23 @@ def buildMarkdownReport(
             "## Autotuned Article-Core Experiments",
             "",
             f"- Sequential transformed geomean: `{formatSpeedup(tuned_summary.get('sequential_geomean'))}`",
-            f"- Default parallel geomean: `{formatSpeedup(tuned_summary.get('default_parallel_geomean'))}`",
-            f"- Tuned parallel geomean: `{formatSpeedup(tuned_summary.get('tuned_geomean'))}`",
+            f"- Tuned geomean: `{formatSpeedup(tuned_summary.get('tuned_geomean'))}`",
             "",
         ])
         lines.extend(renderMarkdownTable(
-            ["Benchmark", "O0", "O2", "O3 seq", "O3 par", "Best tuned", "Threads", "Tiles", "Best/O0", "Best/O3 par"],
+            ["Benchmark", "O0", "O2", "O3 seq", "Best tuned", "Tiles", "Best/O0", "Best/O3 seq"],
             experiment_rows,
         ))
     if tile_sweep_rows:
         lines.extend(["", "## Article-Style Tile Sweep", ""])
         lines.extend(renderMarkdownTable(
-            ["Benchmark", "Tiles", "Threads", "Time", "Speedup"],
+            ["Benchmark", "Tiles", "Time", "Speedup"],
             tile_sweep_rows,
         ))
     if diagnostic_rows:
         lines.extend(["", "## Transformation Diagnostics", ""])
         lines.extend(renderMarkdownTable(
-            ["Benchmark", "Family", "Skew", "Tiles", "Point order", "Wavefront", "Parallel"],
+            ["Benchmark", "Family", "Skew", "Tiles", "Point order"],
             diagnostic_rows,
         ))
     if summary_chart_name or speedup_chart_name:
@@ -980,12 +944,10 @@ def saveCsv(results: List[Dict], levels: List[int], experiments: List[Dict], pat
         writer = csv.writer(f)
         header = ["file", "label"] + cols + [f"O{level}/O0" for level in levels if level > 0] + [
             "O3_seq",
-            "O3_par",
             "O3_best",
-            "best_threads",
             "best_tiles",
             "best/O0",
-            "best/O3_par",
+            "best/O3_seq",
         ]
         writer.writerow(header)
         for result in results:
@@ -999,16 +961,14 @@ def saveCsv(results: List[Dict], levels: List[int], experiments: List[Dict], pat
                 row.append(speedup(base, result["times"].get(f"O{level}")))
             experiment = experiment_by_file.get(result["file"])
             if experiment is None:
-                row.extend(["", "", "", "", "", "", ""])
+                row.extend(["", "", "", "", ""])
             else:
                 row.extend([
                     experiment["o3_sequential"],
-                    experiment["o3_parallel_default"],
                     experiment["best"]["time"],
-                    experiment["best"]["threads"],
                     formatTiles(experiment["best"]["tile_sizes"]),
                     speedup(experiment["baseline"], experiment["best"]["time"]),
-                    speedup(experiment["o3_parallel_default"], experiment["best"]["time"]),
+                    speedup(experiment["o3_sequential"], experiment["best"]["time"]),
                 ])
             writer.writerow(row)
     print(f"Saved CSV: {path}")
@@ -1043,7 +1003,6 @@ def main() -> None:
     parser.add_argument("--filter", "-f", default=None)
     parser.add_argument("--levels", "-l", nargs="+", type=int, default=[0, 2, 3])
     parser.add_argument("--repeat", "-r", type=int, default=3)
-    parser.add_argument("--threads", "-t", type=int, default=0)
     parser.add_argument("--json", "-j", default=None)
     parser.add_argument("--include-long", action="store_true")
     parser.add_argument("--long-only", action="store_true")
@@ -1062,8 +1021,7 @@ def main() -> None:
         return
 
     print(f"\nBenchmark set: {len(files)} files, levels {args.levels}")
-    print(f"Median repeats: {args.repeat}")
-    print(f"Parallel threads: {'auto' if args.threads <= 0 else args.threads}\n")
+    print(f"Median repeats: {args.repeat}\n")
 
     results = []
     for path in files:
@@ -1077,7 +1035,7 @@ def main() -> None:
             results.append(result)
             print(" ".join(f"O{level}:{result['times'][f'O{level}']}" for level in args.levels))
         else:
-            result = benchmarkFile(path, args.levels, repeat=args.repeat, threads=args.threads)
+            result = benchmarkFile(path, args.levels, repeat=args.repeat)
             results.append(result)
             parts = []
             for level in args.levels:
@@ -1090,7 +1048,7 @@ def main() -> None:
         saveJson({"results": results}, outPath)
         return
 
-    experiments = [] if args.no_autotune else buildAutotunedExperiments(files, repeat=args.repeat, threads=args.threads)
+    experiments = [] if args.no_autotune else buildAutotunedExperiments(files, repeat=args.repeat)
     summary = summarizeResults(results, args.levels, article_core_files=ARTICLE_CORE_FILES)
     compare_payload = None
     if args.compare_json and os.path.exists(args.compare_json):
@@ -1100,7 +1058,6 @@ def main() -> None:
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "levels": args.levels,
         "repeat": args.repeat,
-        "threads": args.threads,
         "autotune_enabled": not args.no_autotune,
         "results": results,
         "summary": summary,
@@ -1110,7 +1067,7 @@ def main() -> None:
     }
     saveJson(payload, outPath)
     printTable(results, args.levels)
-    printSummary(summary, args.levels, args.repeat, args.threads, experiments)
+    printSummary(summary, args.levels, args.repeat, experiments)
 
     markdown_path = reportPathFromJsonPath(outPath)
     csv_path = csvPathFromJsonPath(outPath)
@@ -1124,7 +1081,6 @@ def main() -> None:
         article_core_files=ARTICLE_CORE_FILES,
         focus_title=FOCUS_TITLE,
         repeat=args.repeat,
-        threads=args.threads,
         autotune_enabled=not args.no_autotune,
         summary_chart_name=Path(summary_svg_path).name,
         speedup_chart_name=Path(speedup_svg_path).name,

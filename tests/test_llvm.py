@@ -239,25 +239,6 @@ class TestLLVMArrays(unittest.TestCase):
         self.assertIn("@COMMON_BLK_A = global [6 x i32] zeroinitializer", llvm_code)
         self.assertIn("br label %loop_end_", llvm_code)
 
-    def test_parallel_runtime_abi_is_declared(self):
-        code = """PROGRAM PARLLP
-        IMPLICIT NONE
-        INTEGER I, J
-        INTEGER A(64,64)
-        DO I = 1, 64
-            DO J = 1, 64
-                A(I,J) = I + J
-            ENDDO
-        ENDDO
-        END"""
-        llvm_code = compile_code_llvm(code)
-        self.assertIn("declare i32 @__kmpc_global_thread_num", llvm_code)
-        self.assertIn("declare void @__kmpc_fork_call", llvm_code)
-        self.assertIn("declare void @__kmpc_for_static_init_4", llvm_code)
-        self.assertIn("declare void @__kmpc_for_static_fini", llvm_code)
-        self.assertNotIn("@fortran_parallel_for_i32", llvm_code)
-
-
 class TestLLVMFunctions(unittest.TestCase):
     def test_function_calls_llvm(self):
         code = """PROGRAM FNTEST
@@ -335,6 +316,41 @@ END
         llvm_code = compile_code_llvm(code)
         self.assertIn("i1", llvm_code)
         self.assertIn("alloca i1", llvm_code)
+
+
+class TestLLVMEmitDetails(unittest.TestCase):
+    def test_real_print_uses_high_precision_format(self):
+        code = """
+PROGRAM PR
+    REAL X
+    X = 1.5
+    PRINT *, X
+END
+"""
+        llvm_code = compile_code_llvm(code)
+        self.assertIn("%.15g", llvm_code)
+
+    def test_subroutine_literal_arg_passed_by_reference(self):
+        code = """
+PROGRAM T
+    INTEGER N
+    REAL S
+    N = 4
+    CALL CHKSUM(N, 128, S)
+END
+
+SUBROUTINE CHKSUM(N, MAXN, S)
+    INTEGER N, MAXN
+    REAL S
+    S = FLOAT(N + MAXN)
+END
+"""
+        llvm_code = compile_code_llvm(code)
+        self.assertRegex(
+            llvm_code,
+            r"call void @CHKSUM\(i32\* %N, i32\* %t\d+, double\* %S\)",
+        )
+        self.assertNotIn("call void @CHKSUM(i32* %N, i32 128", llvm_code)
 
 
 if __name__ == '__main__':

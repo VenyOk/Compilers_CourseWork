@@ -6,7 +6,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.frontend.lexer import Lexer
 from src.frontend.parser import Parser
-from src.frontend.ast import ParallelDoLoop
 from src.semantic.analyzer import SemanticAnalyzer
 from src.ir.llvm import LLVMGenerator
 from src.optimizations.pipeline import OptimizationPipeline
@@ -26,7 +25,7 @@ def analyze_ok(ast):
     return ok, analyzer.get_errors(), analyzer.get_warnings()
 
 
-def optimize_program(code: str, level: int = 3, article_mode: bool = False):
+def optimize_program(code: str, level: int = 3):
     ast = parse_program(code)
     ok, errors, _ = analyze_ok(ast)
     if not ok:
@@ -34,25 +33,6 @@ def optimize_program(code: str, level: int = 3, article_mode: bool = False):
     pipeline = OptimizationPipeline(level=level)
     optimized = pipeline.run(ast)
     return optimized, pipeline.stats
-
-
-def collect_parallel_vars(stmts):
-    result = []
-    for stmt in stmts:
-        if isinstance(stmt, ParallelDoLoop):
-            result.append(stmt.var)
-            result.extend(collect_parallel_vars(stmt.body))
-        elif hasattr(stmt, "body"):
-            result.extend(collect_parallel_vars(stmt.body))
-        elif hasattr(stmt, "then_body"):
-            result.extend(collect_parallel_vars(stmt.then_body))
-            for _, body in stmt.elif_parts:
-                result.extend(collect_parallel_vars(body))
-            if stmt.else_body:
-                result.extend(collect_parallel_vars(stmt.else_body))
-        elif hasattr(stmt, "statement"):
-            result.extend(collect_parallel_vars([stmt.statement]))
-    return result
 
 
 class TestOptimizationPipeline(unittest.TestCase):
@@ -69,7 +49,7 @@ PROGRAM TEMPD
     ENDDO
 END
 """
-        optimized, stats = optimize_program(code, level=3, article_mode=True)
+        optimized, stats = optimize_program(code, level=3)
         ok, errors, _ = analyze_ok(optimized)
         self.assertTrue(ok, errors)
         self.assertGreater(stats["LoopInvariantCodeMotion"]["hoisted"], 0)
@@ -86,7 +66,7 @@ END
         self.assertIn("%licm_tmp_", llvm_code)
         self.assertIn("%cse_tmp_", llvm_code)
 
-    def test_wavefront_is_applied_to_profitable_two_dimensional_stencil(self):
+    def test_tiling_is_applied_to_profitable_two_dimensional_stencil(self):
         code = """
 PROGRAM GS2D
     IMPLICIT NONE
@@ -100,18 +80,16 @@ PROGRAM GS2D
     ENDDO
 END
 """
-        optimized, stats = optimize_program(code, level=3, article_mode=True)
+        optimized, stats = optimize_program(code, level=3)
         ok, errors, _ = analyze_ok(optimized)
         self.assertTrue(ok, errors)
-        self.assertEqual(stats["LoopSkewing"]["skewed"], 1)
+        self.assertEqual(stats["LoopSkewing"]["skewed"], 0)
         self.assertEqual(stats["LoopTiling"]["tiled"], 1)
-        self.assertEqual(stats["LoopWavefront"]["wavefronted"], 1)
         llvm_code = LLVMGenerator().generate(optimized)
-        self.assertIn("%wf_h0 = alloca i32", llvm_code)
         self.assertIn("%tile_I = alloca i32", llvm_code)
-        self.assertIn("%tile_skew_J = alloca i32", llvm_code)
+        self.assertIn("%tile_J = alloca i32", llvm_code)
 
-    def test_wavefront_is_not_applied_to_two_dimensional_five_point_stencil_when_not_profitable(self):
+    def test_tiling_is_applied_to_two_dimensional_five_point_stencil(self):
         code = """
 PROGRAM GS2SM
     IMPLICIT NONE
@@ -126,9 +104,7 @@ END
 """
         _, stats = optimize_program(code, level=3)
         self.assertEqual(stats["LoopTiling"]["tiled"], 1)
-        self.assertEqual(stats["LoopWavefront"]["wavefronted"], 1)
-
-    def test_parallelization_is_applied_to_three_dimensional_wavefront_band(self):
+    def test_tiling_is_applied_to_three_dimensional_stencil(self):
         code = """
 PROGRAM PGS3D
     IMPLICIT NONE
@@ -145,17 +121,14 @@ PROGRAM PGS3D
     ENDDO
 END
 """
-        optimized, stats = optimize_program(code, level=3, article_mode=True)
+        optimized, stats = optimize_program(code, level=3)
         ok, errors, _ = analyze_ok(optimized)
         self.assertTrue(ok, errors)
-        self.assertGreaterEqual(stats["LoopParallelization"]["parallelized"], 1)
         llvm_code = LLVMGenerator().generate(optimized)
-        self.assertIn("@__kmpc_fork_call", llvm_code)
-        self.assertIn("@__kmpc_for_static_init_4", llvm_code)
-        self.assertIn("@__kmpc_for_static_fini", llvm_code)
-        self.assertIn("@omp_outlined_", llvm_code)
+        self.assertIn("%tile_I = alloca i32", llvm_code)
+        self.assertNotIn("__kmpc", llvm_code)
 
-    def test_parallelization_is_applied_to_two_dimensional_wavefront_band_in_article_o3(self):
+    def test_two_dimensional_stencil_in_article_o3_has_no_parallel_pass(self):
         code = """
 PROGRAM PGS2D
     IMPLICIT NONE
@@ -169,8 +142,7 @@ PROGRAM PGS2D
 END
 """
         _, stats = optimize_program(code, level=3)
-        self.assertGreaterEqual(stats["LoopWavefront"]["wavefronted"], 1)
-        self.assertGreaterEqual(stats["LoopParallelization"]["parallelized"], 1)
+        self.assertNotIn("LoopParallelization", stats)
 
     def test_time_space_gauss_seidel_is_transformed_end_to_end(self):
         code = """
@@ -192,12 +164,41 @@ END
         self.assertTrue(ok, errors)
         self.assertEqual(stats["LoopSkewing"]["skewed"], 1)
         self.assertEqual(stats["LoopTiling"]["tiled"], 1)
-        self.assertEqual(stats["LoopWavefront"]["wavefronted"], 1)
         llvm_code = LLVMGenerator().generate(optimized)
         self.assertIn("%tile_", llvm_code)
         self.assertIn("%skew_", llvm_code)
+        self.assertIn("%tile_T = alloca i32", llvm_code)
 
-    def test_large_time_space_gauss_seidel_gets_safe_parallel_path_without_parallelizing_time(self):
+    def test_time_space_gauss_seidel_3d_is_tiled_after_skew(self):
+        code = """
+PROGRAM TGS3D
+    IMPLICIT NONE
+    INTEGER T, I, J, K
+    REAL U(24,24,24), S
+    DO T = 1, 4
+        DO I = 2, 23
+            DO J = 2, 23
+                DO K = 2, 23
+                    S = U(I-1,J,K) + U(I+1,J,K) + U(I,J-1,K)
+                    S = S + U(I,J+1,K) + U(I,J,K-1) + U(I,J,K+1)
+                    U(I,J,K) = S / 6.0
+                ENDDO
+            ENDDO
+        ENDDO
+    ENDDO
+END
+"""
+        optimized, stats = optimize_program(code, level=3)
+        ok, errors, _ = analyze_ok(optimized)
+        self.assertTrue(ok, errors)
+        self.assertEqual(stats["LoopSkewing"]["skewed"], 1)
+        tile_diag = stats["LoopTiling"]["diagnostics"]
+        main = [item for item in tile_diag if item.get("family") == "gauss_seidel" and "skew_I" in item.get("vars", [])]
+        self.assertEqual(len(main), 1)
+        llvm_code = LLVMGenerator().generate(optimized)
+        self.assertIn("%tile_skew_I = alloca i32", llvm_code)
+
+    def test_large_time_space_gauss_seidel_keeps_time_loop_sequential(self):
         code = """
 PROGRAM TGS2L
     IMPLICIT NONE
@@ -220,12 +221,8 @@ END
         optimized, stats = optimize_program(code, level=3)
         ok, errors, _ = analyze_ok(optimized)
         self.assertTrue(ok, errors)
-        self.assertEqual(stats["LoopWavefront"]["wavefronted"], 1)
-        self.assertGreaterEqual(stats["LoopParallelization"]["parallelized"], 1)
-        parallel_vars = collect_parallel_vars(optimized.statements)
-        self.assertNotIn("T", parallel_vars)
         llvm_code = LLVMGenerator().generate(optimized)
-        self.assertIn("@__kmpc_fork_call", llvm_code)
+        self.assertNotIn("__kmpc", llvm_code)
 
     def test_time_space_dirichlet_with_many_coeff_arrays_uses_article_style_skewed_tiling(self):
         code = """
@@ -244,7 +241,7 @@ PROGRAM TDIR2D
     ENDDO
 END
 """
-        optimized, stats = optimize_program(code, level=3, article_mode=True)
+        optimized, stats = optimize_program(code, level=3)
         ok, errors, _ = analyze_ok(optimized)
         self.assertTrue(ok, errors)
         self.assertGreaterEqual(stats["LoopSkewing"]["skewed"], 1, stats)
@@ -252,12 +249,14 @@ END
         tile_diags = stats["LoopTiling"]["diagnostics"]
         self.assertTrue(tile_diags)
         self.assertEqual(tile_diags[0]["family"], "dirichlet_gs")
-        self.assertEqual(len(tile_diags[0]["point_order"]), len(tile_diags[0]["vars"]))
+        self.assertEqual(len(tile_diags[0]["tile_sizes"]), 3)
+        self.assertTrue(tile_diags[0].get("side_sliced"))
+        self.assertTrue(tile_diags[0].get("iterative"))
         llvm_code = LLVMGenerator().generate(optimized)
         self.assertIn("%tile_", llvm_code)
         self.assertIn("%skew_", llvm_code)
 
-    def test_wavefront_is_applied_to_three_dimensional_stencil(self):
+    def test_three_dimensional_stencil_tiles_without_skewing_when_skew_is_unneeded(self):
         code = """
 PROGRAM ST3D
     IMPLICIT NONE
@@ -277,11 +276,10 @@ END
         self.assertTrue(ok, errors)
         self.assertEqual(stats["LoopSkewing"]["skewed"], 0)
         self.assertEqual(stats["LoopTiling"]["tiled"], 1)
-        self.assertEqual(stats["LoopWavefront"]["wavefronted"], 1)
         llvm_code = LLVMGenerator().generate(optimized)
-        self.assertIn("%wf_h0 = alloca i32", llvm_code)
+        self.assertIn("%tile_I = alloca i32", llvm_code)
 
-    def test_wavefront_is_applied_to_four_dimensional_stencil(self):
+    def test_four_dimensional_stencil_tiles_without_skewing_when_skew_is_unneeded(self):
         code = """
 PROGRAM ST4D
     IMPLICIT NONE
@@ -305,10 +303,8 @@ END
         self.assertTrue(ok, errors)
         self.assertEqual(stats["LoopSkewing"]["skewed"], 0)
         self.assertEqual(stats["LoopTiling"]["tiled"], 1)
-        self.assertEqual(stats["LoopWavefront"]["wavefronted"], 1)
         llvm_code = LLVMGenerator().generate(optimized)
         self.assertIn("%tile_L = alloca i32", llvm_code)
-        self.assertIn("%wf_h0 = alloca i32", llvm_code)
 
     def test_generated_loop_variables_are_declared_inside_subroutine_for_nd_case(self):
         code = """
@@ -344,9 +340,8 @@ END
             for name, _ in decl.names
         }
         self.assertTrue(any(name.startswith("tile_") for name in declared))
-        self.assertTrue(any(name.startswith("wf_") for name in declared))
 
-    def test_wavefront_is_not_applied_to_regular_matmul(self):
+    def test_regular_matmul_generates_valid_o3_llvm(self):
         code = """
 PROGRAM MATMUL
     IMPLICIT NONE
@@ -370,11 +365,10 @@ END
         optimized, stats = optimize_program(code, level=3)
         ok, errors, _ = analyze_ok(optimized)
         self.assertTrue(ok, errors)
-        self.assertEqual(stats["LoopWavefront"]["wavefronted"], 0)
         llvm_code = LLVMGenerator().generate(optimized)
         self.assertIn("define i32 @main()", llvm_code)
 
-    def test_parallelization_is_applied_to_independent_array_fill(self):
+    def test_independent_array_fill_stays_sequential(self):
         code = """
 PROGRAM PFILL
     IMPLICIT NONE
@@ -396,13 +390,11 @@ END
         optimized, stats = optimize_program(code, level=3)
         ok, errors, _ = analyze_ok(optimized)
         self.assertTrue(ok, errors)
-        self.assertGreaterEqual(stats["LoopParallelization"]["parallelized"], 1)
+        self.assertNotIn("LoopParallelization", stats)
         llvm_code = LLVMGenerator().generate(optimized)
-        self.assertIn("@__kmpc_fork_call", llvm_code)
-        self.assertIn("@__kmpc_for_static_init_4", llvm_code)
-        self.assertNotIn("@fortran_parallel_for_i32", llvm_code)
+        self.assertNotIn("__kmpc", llvm_code)
 
-    def test_outer_time_loop_with_inner_stateful_nests_is_not_parallelized(self):
+    def test_outer_time_loop_with_inner_stateful_nests_stays_sequential(self):
         code = """
 PROGRAM STTIM
     IMPLICIT NONE
@@ -429,9 +421,7 @@ PROGRAM STTIM
 END
 """
         optimized, stats = optimize_program(code, level=3)
-        self.assertGreaterEqual(stats["LoopParallelization"]["parallelized"], 0)
-        parallel_vars = collect_parallel_vars(optimized.statements)
-        self.assertNotIn("T", parallel_vars)
+        self.assertNotIn("LoopParallelization", stats)
 
     def test_generated_temporaries_are_declared_inside_function(self):
         code = """
@@ -468,7 +458,7 @@ END
         self.assertGreater(stats["LoopInvariantCodeMotion"]["hoisted"], 0)
         self.assertGreater(stats["CommonSubexpressionElimination"]["cse_vars"], 0)
 
-    def test_small_three_dimensional_nest_keeps_non_wavefront_path(self):
+    def test_small_three_dimensional_nest_keeps_non_skew_path(self):
         code = """
 PROGRAM SM3D
     IMPLICIT NONE
@@ -485,7 +475,6 @@ END
 """
         _, stats = optimize_program(code, level=3)
         self.assertEqual(stats["LoopSkewing"]["skewed"], 0)
-        self.assertEqual(stats["LoopWavefront"]["wavefronted"], 0)
         self.assertIn("IntraTileLoopInterchange", stats)
 
     def test_non_affine_three_dimensional_case_falls_back_safely(self):
@@ -508,7 +497,6 @@ END
         self.assertTrue(ok, errors)
         self.assertEqual(stats["LoopSkewing"]["skewed"], 0)
         self.assertEqual(stats["LoopTiling"]["tiled"], 0)
-        self.assertEqual(stats["LoopWavefront"]["wavefronted"], 0)
         llvm_code = LLVMGenerator().generate(optimized)
         self.assertIn("define i32 @main()", llvm_code)
 
@@ -588,7 +576,7 @@ END
         ok, errors, _ = analyze_ok(optimized)
         self.assertTrue(ok, errors)
 
-    def test_linearization_after_4d_wavefront_no_crash(self):
+    def test_linearization_after_4d_tiling_no_crash(self):
         code = """
 PROGRAM LIN4D
     IMPLICIT NONE
@@ -968,23 +956,26 @@ END
             llvm_code = LLVMGenerator().generate(optimized)
             self.assertIn("%tile_", llvm_code)
 
-    def test_wavefront_vars_have_wf_prefix_in_llvm(self):
+    def test_iterative_tile_vars_have_tile_prefix_in_llvm(self):
         code = """
-PROGRAM WFVAR
+PROGRAM ITVAR
     IMPLICIT NONE
-    INTEGER I, J
+    INTEGER T, I, J
     REAL U(96,96)
-    DO I = 2, 95
-        DO J = 2, 95
-            U(I,J) = 0.25*(U(I-1,J)+U(I+1,J)+U(I,J-1)+U(I,J+1))
+    DO T = 1, 12
+        DO I = 2, 95
+            DO J = 2, 95
+                U(I,J) = 0.25*(U(I-1,J)+U(I+1,J)+U(I,J-1)+U(I,J+1))
+            ENDDO
         ENDDO
     ENDDO
 END
 """
         optimized, stats = optimize_program(code, level=3)
-        if stats.get("LoopWavefront", {}).get("wavefronted", 0) > 0:
+        if stats.get("LoopTiling", {}).get("tiled", 0) > 0:
             llvm_code = LLVMGenerator().generate(optimized)
-            self.assertIn("%wf_", llvm_code)
+            self.assertIn("%tile_T = alloca i32", llvm_code)
+            self.assertNotIn("fortran_parallel", llvm_code)
 
     def test_o3_vs_o0_same_program_no_crash(self):
         code = """
@@ -1140,47 +1131,25 @@ END
         self.assertTrue(ok, errors)
         self.assertEqual(stats["LoopSkewing"]["skewed"], 1)
         self.assertGreaterEqual(stats["LoopTiling"]["tiled"], 1)
-        self.assertGreaterEqual(stats["LoopWavefront"]["wavefronted"], 1)
 
-
-class TestParallelizationDetails(unittest.TestCase):
-    def test_independent_init_loop_parallelized(self):
+class TestSequentialO3Pipeline(unittest.TestCase):
+    def test_o3_pipeline_has_no_parallel_pass(self):
         code = """
-PROGRAM PRNIT
+PROGRAM NOPAR
     IMPLICIT NONE
     INTEGER I, J
-    REAL A(64,64)
-    DO I = 1, 64
-        DO J = 1, 64
-            A(I,J) = 0.0
+    REAL U(96,96)
+    DO I = 2, 95
+        DO J = 2, 95
+            U(I,J) = 0.25*(U(I-1,J)+U(I+1,J)+U(I,J-1)+U(I,J+1))
         ENDDO
     ENDDO
 END
 """
-        optimized, stats = optimize_program(code, level=3)
-        ok, errors, _ = analyze_ok(optimized)
-        self.assertTrue(ok, errors)
-        self.assertGreaterEqual(stats["LoopParallelization"]["parallelized"], 1)
+        _, stats = optimize_program(code, level=3)
+        self.assertNotIn("LoopParallelization", stats)
 
-    def test_parallel_loop_generates_kmpc_calls(self):
-        code = """
-PROGRAM KMPC
-    IMPLICIT NONE
-    INTEGER I, J
-    REAL A(64,64)
-    DO I = 1, 64
-        DO J = 1, 64
-            A(I,J) = FLOAT(I) + FLOAT(J)
-        ENDDO
-    ENDDO
-END
-"""
-        optimized, stats = optimize_program(code, level=3)
-        if stats.get("LoopParallelization", {}).get("parallelized", 0) > 0:
-            llvm_code = LLVMGenerator().generate(optimized)
-            self.assertIn("@__kmpc_fork_call", llvm_code)
-
-    def test_reduction_loop_not_parallelized(self):
+    def test_reduction_loop_stays_sequential(self):
         code = """
 PROGRAM REDUCE
     IMPLICIT NONE
@@ -1195,66 +1164,9 @@ PROGRAM REDUCE
 END
 """
         optimized, stats = optimize_program(code, level=3)
-        parallel_vars = collect_parallel_vars(optimized.statements)
-        self.assertNotIn("I", parallel_vars)
+        self.assertNotIn("LoopParallelization", stats)
 
-    def test_parallelization_diagnostics_non_empty_for_stencil(self):
-        code = """
-PROGRAM PRDG
-    IMPLICIT NONE
-    INTEGER I, J
-    REAL U(96,96)
-    DO I = 2, 95
-        DO J = 2, 95
-            U(I,J) = 0.25*(U(I-1,J)+U(I+1,J)+U(I,J-1)+U(I,J+1))
-        ENDDO
-    ENDDO
-END
-"""
-        _, stats = optimize_program(code, level=3)
-        self.assertGreaterEqual(stats["LoopParallelization"]["parallelized"], 1)
-        diags = stats["LoopParallelization"]["diagnostics"]
-        self.assertTrue(len(diags) >= 1)
-        self.assertIn("strategy", diags[0])
-        self.assertIn("var", diags[0])
-
-    def test_parallel_strategy_for_wavefront_is_wavefront_or_tiled(self):
-        code = """
-PROGRAM PARWF
-    IMPLICIT NONE
-    INTEGER I, J
-    REAL U(96,96)
-    DO I = 2, 95
-        DO J = 2, 95
-            U(I,J) = 0.25*(U(I-1,J)+U(I+1,J)+U(I,J-1)+U(I,J+1))
-        ENDDO
-    ENDDO
-END
-"""
-        _, stats = optimize_program(code, level=3)
-        diags = stats["LoopParallelization"]["diagnostics"]
-        strategies = {d["strategy"] for d in diags}
-        self.assertTrue(strategies.issubset({"wavefront", "tiled", "independent"}))
-
-    def test_parallel_private_vars_list_present_in_diagnostics(self):
-        code = """
-PROGRAM PRVDG
-    IMPLICIT NONE
-    INTEGER I, J
-    REAL S, U(32,32)
-    DO I = 1, 32
-        DO J = 1, 32
-            S = FLOAT(I + J)
-            U(I,J) = S * S
-        ENDDO
-    ENDDO
-END
-"""
-        optimized, stats = optimize_program(code, level=3)
-        ok, errors, _ = analyze_ok(optimized)
-        self.assertTrue(ok, errors)
-
-    def test_time_outer_loop_not_parallelized_in_time_space_gs(self):
+    def test_time_outer_loop_stays_sequential_in_time_space_gs(self):
         code = """
 PROGRAM TLOOP
     IMPLICIT NONE
@@ -1270,31 +1182,50 @@ PROGRAM TLOOP
 END
 """
         optimized, stats = optimize_program(code, level=3)
-        parallel_vars = collect_parallel_vars(optimized.statements)
-        self.assertNotIn("T", parallel_vars)
+        self.assertNotIn("LoopParallelization", stats)
 
-    def test_two_independent_nests_both_may_parallelize(self):
+    def test_intra_tile_order_places_innermost_loop_outward(self):
+        from src.optimizations.loop_analysis import buildNest, chooseIntraTileLoopOrder
+
         code = """
-PROGRAM TWNS
+PROGRAM ITORD
     IMPLICIT NONE
     INTEGER I, J
-    REAL A(64,64), B(64,64)
-    DO I = 1, 64
-        DO J = 1, 64
+    REAL A(96,96)
+    DO I = 1, 96
+        DO J = 1, 96
             A(I,J) = FLOAT(I + J)
-        ENDDO
-    ENDDO
-    DO I = 1, 64
-        DO J = 1, 64
-            B(I,J) = FLOAT(I * J)
         ENDDO
     ENDDO
 END
 """
-        optimized, stats = optimize_program(code, level=3)
-        ok, errors, _ = analyze_ok(optimized)
-        self.assertTrue(ok, errors)
-        self.assertGreaterEqual(stats["LoopParallelization"]["parallelized"], 1)
+        ast = parse_program(code)
+        nest = buildNest(ast.statements[0])
+        self.assertEqual(chooseIntraTileLoopOrder(nest), [1, 0])
+
+    def test_intra_tile_interchange_applies_to_skewed_point_loops(self):
+        code = """
+PROGRAM ITSK
+    IMPLICIT NONE
+    INTEGER T, I, J
+    REAL U(24,24)
+    DO T = 1, 4
+        DO I = 2, 23
+            DO J = 2, 23
+                U(I,J) = 0.25*(U(I-1,J)+U(I+1,J)+U(I,J-1)+U(I,J+1))
+            ENDDO
+        ENDDO
+    ENDDO
+END
+"""
+        _, stats = optimize_program(code, level=3)
+        self.assertIn("IntraTileLoopInterchange", stats)
+        tile_side_sliced = any(
+            diag.get("side_sliced")
+            for diag in stats.get("LoopTiling", {}).get("diagnostics", [])
+        )
+        interchanged = stats["IntraTileLoopInterchange"]["interchanged"]
+        self.assertTrue(tile_side_sliced or interchanged >= 1)
 
 
 if __name__ == "__main__":

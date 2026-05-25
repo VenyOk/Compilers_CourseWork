@@ -27,7 +27,7 @@ from src.frontend.ast import (
     WriteStatement,
 )
 from src.optimizations.base import ASTOptimizationPass
-from src.optimizations.loop_analysis import buildNest, getSkewMatrix, skewDecision, stencilFamily
+from src.optimizations.loop_analysis import buildNest, getSkewMatrix, skewDecision, stencilFamily, transformedDependencesLegal
 
 def skewVarName(var: str) -> str:
     return f"skew_{var}"
@@ -201,6 +201,8 @@ def trySkew(loop: Statement, counter: List[int], diagnostics: List[Dict[str, obj
     if nest.depth >= 2 and should_skew:
         matrix = getSkewMatrix(nest)
         if any(any(row) for row in matrix):
+            if not transformedDependencesLegal(nest, matrix):
+                return dcReplace(loop, body=[trySkew(stmt, counter, diagnostics) for stmt in loop.body])
             counter[0] += 1
             diagnostics.append({
                 "vars": list(nest.vars),

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import replace as dcReplace
 from typing import List, Optional, Tuple
-
 from src.frontend.ast import ArrayRef, BinaryOp, DoLoop, Expression, FunctionCall, IfStatement, IntegerLiteral, LabeledDoLoop, Program, RealLiteral, SimpleIfStatement, UnaryOp, Variable
 from src.optimizations.base import ASTOptimizationPass
 
@@ -82,6 +81,48 @@ def flattenAdd(expr: Expression) -> Tuple[List[Expression], float, bool]:
         return [], rv, True
     return [expr], 0.0, False
 
+def combineLikeTerms(terms: List[Expression], const_value: float, template: Expression) -> Tuple[List[Expression], float]:
+    coeffs: dict = {}
+    others: List[Expression] = []
+    for term in terms:
+        if isinstance(term, Variable):
+            coeffs[term.name] = coeffs.get(term.name, 0) + 1
+            continue
+        if isinstance(term, UnaryOp) and term.op == "-" and isinstance(term.operand, Variable):
+            coeffs[term.operand.name] = coeffs.get(term.operand.name, 0) - 1
+            continue
+        if isinstance(term, BinaryOp) and term.op == "*":
+            factor = intValue(term.left)
+            if factor is not None and isinstance(term.right, Variable):
+                coeffs[term.right.name] = coeffs.get(term.right.name, 0) + factor
+                continue
+            factor = intValue(term.right)
+            if factor is not None and isinstance(term.left, Variable):
+                coeffs[term.left.name] = coeffs.get(term.left.name, 0) + factor
+                continue
+        others.append(term)
+    combined: List[Expression] = list(others)
+    for name in sorted(coeffs):
+        coeff = coeffs[name]
+        if coeff == 0:
+            continue
+        var = Variable(name=name, line=template.line, col=template.col)
+        if coeff == 1:
+            combined.append(var)
+        elif coeff == -1:
+            combined.append(UnaryOp(op="-", operand=var, line=template.line, col=template.col))
+        else:
+            combined.append(BinaryOp(left=makeInt(coeff, template), op="*", right=var, line=template.line, col=template.col))
+    return combined, const_value
+
+def linearizeAddExpr(expr: Expression) -> Expression:
+    if isinstance(expr, BinaryOp) and expr.op in {"+", "-"}:
+        use_real = isinstance(expr.left, RealLiteral) or isinstance(expr.right, RealLiteral)
+        terms, const_value, const_real = flattenAdd(expr)
+        terms, const_value = combineLikeTerms(terms, const_value, expr)
+        return rebuildAdd(terms, const_value, use_real or const_real, expr)
+    return expr
+
 def rebuildAdd(terms: List[Expression], const_value: float, use_real: bool, template: Expression) -> Expression:
     filtered_terms = [term for term in terms if not isZero(term)]
     const_expr: Optional[Expression] = None
@@ -99,19 +140,41 @@ def rebuildAdd(terms: List[Expression], const_value: float, use_real: bool, temp
         result = BinaryOp(left=result, op="+", right=term, line=template.line, col=template.col)
     return result
 
+def linearizeExpr(expr: Expression) -> Expression:
+    if isinstance(expr, BinaryOp):
+        left = linearizeExpr(expr.left)
+        right = linearizeExpr(expr.right)
+        simplified = simplifyBinary(dcReplace(expr, left=left, right=right))
+        if isinstance(simplified, BinaryOp) and simplified.op in {"+", "-"}:
+            return linearizeAddExpr(simplified)
+        return simplified
+    if isinstance(expr, UnaryOp):
+        operand = linearizeExpr(expr.operand)
+        if isinstance(operand, IntegerLiteral):
+            return makeInt(operand.value, expr) if expr.op != "-" else makeInt(-operand.value, expr)
+        if isinstance(operand, RealLiteral):
+            return makeReal(-operand.value, expr) if expr.op == "-" else operand
+        return dcReplace(expr, operand=operand)
+    if isinstance(expr, FunctionCall):
+        args = [linearizeExpr(arg) for arg in expr.args]
+        return simplifyFunction(dcReplace(expr, args=args))
+    return expr
+
 def simplifyFunction(expr: FunctionCall) -> Expression:
     upper_name = expr.name.upper()
     args = expr.args
     if upper_name in {"MIN", "MAX"} and len(args) == 2:
-        if exprKey(args[0]) == exprKey(args[1]):
-            return args[0]
-        left_int = intValue(args[0])
-        right_int = intValue(args[1])
+        left = linearizeAddExpr(args[0]) if isinstance(args[0], BinaryOp) else args[0]
+        right = linearizeAddExpr(args[1]) if isinstance(args[1], BinaryOp) else args[1]
+        if exprKey(left) == exprKey(right):
+            return left
+        left_int = intValue(left)
+        right_int = intValue(right)
         if left_int is not None and right_int is not None:
             value = min(left_int, right_int) if upper_name == "MIN" else max(left_int, right_int)
             return makeInt(value, expr)
-        left_real = realValue(args[0])
-        right_real = realValue(args[1])
+        left_real = realValue(left)
+        right_real = realValue(right)
         if left_real is not None and right_real is not None:
             value = min(left_real, right_real) if upper_name == "MIN" else max(left_real, right_real)
             return makeReal(value, expr)
@@ -126,9 +189,7 @@ def simplifyBinary(expr: BinaryOp) -> Expression:
     right_real = realValue(right)
 
     if expr.op in {"+", "-"}:
-        use_real = isinstance(left, RealLiteral) or isinstance(right, RealLiteral)
-        terms, const_value, const_real = flattenAdd(expr)
-        return rebuildAdd(terms, const_value, use_real or const_real, expr)
+        return linearizeAddExpr(expr)
 
     if expr.op == "*":
         if isZero(left) or isZero(right):
@@ -180,7 +241,7 @@ class AffineLinearization(ASTOptimizationPass):
     def hasTransformedLoops(self, stmts) -> bool:
         for stmt in stmts:
             if isinstance(stmt, (DoLoop, LabeledDoLoop)):
-                if stmt.var.startswith(("tile_", "skew_", "wf_")):
+                if stmt.var.startswith(("tile_", "skew_")):
                     return True
                 if self.hasTransformedLoops(stmt.body):
                     return True
@@ -197,21 +258,13 @@ class AffineLinearization(ASTOptimizationPass):
                     return True
         return False
 
+    def transformStmt(self, stmt):
+        return super().transformStmt(stmt)
+
     def transformExpr(self, expr):
         original = expr
         expr = super().transformExpr(expr)
-        if isinstance(expr, UnaryOp) and expr.op == "-":
-            iv = intValue(expr)
-            if iv is not None:
-                expr = makeInt(iv, expr)
-            else:
-                rv = realValue(expr)
-                if rv is not None:
-                    expr = makeReal(rv, expr)
-        elif isinstance(expr, BinaryOp):
-            expr = simplifyBinary(expr)
-        elif isinstance(expr, FunctionCall):
-            expr = simplifyFunction(expr)
+        expr = linearizeExpr(expr)
         if exprKey(expr) != exprKey(original):
             self.changed += 1
         return expr
