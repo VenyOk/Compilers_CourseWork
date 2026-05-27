@@ -11,6 +11,11 @@ from src.semantic.analyzer import SemanticAnalyzer
 from src.ir.ssa import SSAGenerator
 from src.ir.llvm import LLVMGenerator
 
+def ensure_parent_dir(path: str) -> None:
+    parent = os.path.dirname(os.path.abspath(path))
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
 def analyze_file(file_path: str, ssa_output: str = None, llvm_output: str = None,
                  show_ast: bool = False, opt_level: int = 0) -> int:
     try:
@@ -81,6 +86,7 @@ def analyze_file(file_path: str, ssa_output: str = None, llvm_output: str = None
                     ssa_gen = SSAGenerator()
                     ssa_instructions = ssa_gen.generate(ast)
                     ssa_str = ssa_gen.to_string(ssa_instructions)
+                    ensure_parent_dir(ssa_output)
                     with open(ssa_output, 'w', encoding='utf-8') as f:
                         f.write(ssa_str)
                     print(f"[OK] SSA форма записана в '{ssa_output}'")
@@ -91,6 +97,7 @@ def analyze_file(file_path: str, ssa_output: str = None, llvm_output: str = None
                 try:
                     llvm_gen = LLVMGenerator()
                     llvm_code = llvm_gen.generate(ast)
+                    ensure_parent_dir(llvm_output)
                     with open(llvm_output, 'w', encoding='utf-8') as f:
                         f.write(llvm_code)
                     print(f"[OK] LLVM IR записан в '{llvm_output}'")
