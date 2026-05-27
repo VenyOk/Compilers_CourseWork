@@ -32,9 +32,7 @@ def analyze_file(file_path: str, ssa_output: str = None, llvm_output: str = None
         tokens = lexer.tokenize()
         lexer_errors = lexer.get_errors()
         if lexer_errors:
-            print("=" * 80)
             print("Ошибки лексера:")
-            print("=" * 80)
             for i, error in enumerate(lexer_errors, 1):
                 print(f"  {i}. {error}")
             print()
@@ -42,11 +40,9 @@ def analyze_file(file_path: str, ssa_output: str = None, llvm_output: str = None
         ast = parser.parse()
         if show_ast:
             print("AST:")
-            print("=" * 80)
             print(pretty_print_ast(ast))
             print()
         print("Семантический анализ:")
-        print("=" * 80)
         semantic = SemanticAnalyzer()
         success = semantic.analyze(ast)
         errors = semantic.get_errors()
