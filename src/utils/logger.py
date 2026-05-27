@@ -2,32 +2,32 @@ import logging
 import sys
 from typing import Optional
 
-_logger: Optional[logging.Logger] = None
+cachedLogger: Optional[logging.Logger] = None
 
 def get_logger(name: str = "fortran_compiler") -> logging.Logger:
-    global _logger
-    if _logger is not None:
-        return _logger
+    global cachedLogger
+    if cachedLogger is not None:
+        return cachedLogger
     
-    _logger = logging.getLogger(name)
-    _logger.setLevel(logging.INFO)
+    cachedLogger = logging.getLogger(name)
+    cachedLogger.setLevel(logging.INFO)
     
-    if not _logger.handlers:
+    if not cachedLogger.handlers:
         handler = logging.StreamHandler(sys.stdout)
         formatter = logging.Formatter(
             "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
         )
         handler.setFormatter(formatter)
-        _logger.addHandler(handler)
+        cachedLogger.addHandler(handler)
     
-    return _logger
+    return cachedLogger
 
 def setup_logger(level: str = "INFO") -> None:
-    global _logger
-    _logger = get_logger()
+    global cachedLogger
+    cachedLogger = get_logger()
     log_level = getattr(logging, level.upper(), logging.INFO)
-    _logger.setLevel(log_level)
-    for handler in _logger.handlers:
+    cachedLogger.setLevel(log_level)
+    for handler in cachedLogger.handlers:
         handler.setLevel(log_level)
 
 def debug(msg: str, *args, **kwargs) -> None:

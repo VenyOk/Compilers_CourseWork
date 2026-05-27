@@ -960,7 +960,7 @@ class LLVMGenerator:
             for array_key, delta in iv_deltas.items():
                 if array_key not in sample_indices:
                     continue
-                iv_name = f"_linear_iv_{array_key.lower()}_{loop_id}"
+                iv_name = f"linear_iv_{array_key.lower()}_{loop_id}"
                 _, iv_ptr = self.ensure_scalar_alloc(iv_name, "i32")
                 init_idx = self.init_linear_iv(array_key, sample_indices[array_key])
                 self.code_lines.append(f"  store i32 {init_idx}, i32* {iv_ptr}")

@@ -871,7 +871,7 @@ class Parser:
         self.expect(TokenType.WRITE)
         self.expect(TokenType.LPAREN)
         unit = "*"
-        format_ = "*"
+        formatSpec = "*"
         self.expect(TokenType.STAR)
         if self.match(TokenType.COMMA):
             self.advance()
@@ -884,7 +884,7 @@ class Parser:
             if not self.match(TokenType.COMMA):
                 break
             self.advance()
-        return WriteStatement(unit=unit, format=format_, items=items)
+        return WriteStatement(unit=unit, format=formatSpec, items=items)
 
     def parse_goto_statement(self) -> GotoStatement:
         self.expect(TokenType.GOTO)
